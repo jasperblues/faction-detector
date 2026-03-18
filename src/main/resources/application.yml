@@ -1,0 +1,30 @@
+embabel:
+  agent:
+    logging:
+      personality: starwars
+    platform:
+      toolloop:
+        type: parallel
+  models:
+    defaultLlm: claude-sonnet-4-5
+
+faction:
+  github:
+    token: ${FACTION_GITHUB_TOKEN:}
+    edge-source: COMMENTS  # REVIEWS | COMMENTS | BOTH
+
+database:
+  dataSources:
+    factions:
+      type: NEO4J
+      userName: ${NEO4J_USERNAME:neo4j}
+      password: ${NEO4J_PASSWORD:brahmsian}
+      host: ${NEO4J_HOST:localhost}
+      port: 7687
+      databaseName: factions
+
+logging:
+  level:
+    org.drivine: WARN
+    org.drivine.manager: DEBUG
+    com.embabel.faction: INFO

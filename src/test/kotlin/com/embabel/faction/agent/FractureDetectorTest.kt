@@ -1,0 +1,147 @@
+/*
+ * Copyright 2024-2026 Embabel Pty Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.embabel.faction.agent
+
+import com.embabel.faction.domain.TensionPattern
+import com.embabel.faction.domain.TensionSeverity
+import com.embabel.faction.domain.WindowedScore
+import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Test
+import java.time.Instant
+import java.time.temporal.ChronoUnit
+
+class FractureDetectorTest {
+
+    private val detector = FractureDetector()
+
+    private fun week(weeksAgo: Int): Instant =
+        Instant.now().minus((weeksAgo * 7).toLong(), ChronoUnit.DAYS)
+
+    private fun score(asymmetry: Double, weeksAgo: Int, communities: Int = 3) = WindowedScore(
+        windowStart = week(weeksAgo),
+        windowEnd = week(weeksAgo).plus(30, ChronoUnit.DAYS),
+        asymmetryRatio = asymmetry,
+        connectedComponents = communities,
+        modularity = asymmetry * 0.5,
+    )
+
+    @Test
+    fun `empty scores returns STABLE`() {
+        val result = detector.detect(emptyList())
+        assertEquals(TensionPattern.STABLE, result.pattern)
+        assertEquals(TensionSeverity.LOW, result.severity)
+        assertFalse(result.isResolved)
+    }
+
+    @Test
+    fun `all scores below threshold returns STABLE`() {
+        val scores = listOf(score(0.2, 20), score(0.3, 15), score(0.25, 10), score(0.2, 5))
+        val result = detector.detect(scores)
+        assertEquals(TensionPattern.STABLE, result.pattern)
+    }
+
+    @Test
+    fun `sharp spike in past with drop after returns FRACTURE`() {
+        // Low baseline → sharp spike → drop → resolved
+        val scores = listOf(
+            score(0.2, 30), score(0.25, 28), score(0.2, 26),  // quiet baseline
+            score(0.8, 20), score(0.9, 18), score(1.0, 16), score(0.85, 14),  // spike
+            score(0.3, 8), score(0.2, 6), score(0.15, 4), score(0.1, 2),     // resolved
+        )
+        val result = detector.detect(scores)
+        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionSeverity.EXTREME, result.severity)
+        assertTrue(result.isResolved)
+        assertNotNull(result.fractureDate)
+        assertFalse(result.isRising)
+    }
+
+    @Test
+    fun `gradual rise and fall returns EXODUS`() {
+        // Gradual climb from above-baseline → gradual resolution
+        val scores = listOf(
+            score(0.45, 40), score(0.5, 35), score(0.55, 30),  // gradual rise from elevated base
+            score(0.6, 25), score(0.65, 20), score(0.6, 15),   // plateau
+            score(0.4, 8), score(0.3, 5), score(0.2, 2),       // gradual resolution
+        )
+        val result = detector.detect(scores)
+        assertEquals(TensionPattern.EXODUS, result.pattern)
+        assertTrue(result.isResolved)
+    }
+
+    @Test
+    fun `peak at window end with no resolution is PRE_FRACTURE`() {
+        val scores = listOf(
+            score(0.2, 20), score(0.3, 16), score(0.5, 12),
+            score(0.7, 8), score(0.85, 4), score(0.9, 1),
+        )
+        val result = detector.detect(scores)
+        assertEquals(TensionPattern.FRACTURE_IMMINENT, result.pattern)
+        assertEquals(TensionSeverity.EXTREME, result.severity)
+        assertFalse(result.isResolved)
+    }
+
+    @Test
+    fun `rising recent windows sets isRising true`() {
+        val scores = listOf(
+            score(0.3, 12), score(0.4, 8), score(0.6, 4), score(0.75, 1),
+        )
+        val result = detector.detect(scores)
+        assertTrue(result.isRising)
+    }
+
+    @Test
+    fun `nodejs-like pattern scores EXTREME FRACTURE`() {
+        // Peak at 1.0 in weeks 16-20 ago (Nov-Dec 2014 equivalent), resolved by weeks 4-8 ago
+        val scores = listOf(
+            score(0.6, 24), score(0.75, 22), score(0.9, 20),
+            score(1.0, 18), score(0.95, 16),                              // peak cluster
+            score(0.55, 10), score(0.45, 8), score(0.35, 6),             // drop
+            score(0.25, 4), score(0.2, 2),                                // resolved
+        )
+        val result = detector.detect(scores)
+        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionSeverity.EXTREME, result.severity)
+        assertTrue(result.isResolved)
+        assertEquals(1.0, result.peakAsymmetry)
+        assertNotNull(result.peakDate)
+    }
+
+    @Test
+    fun `BDFL-like pattern (high asymmetry, no tension) stays STABLE`() {
+        // Consistently elevated but below tension threshold — structural asymmetry, not factional
+        val scores = listOf(
+            score(0.35, 20), score(0.4, 15), score(0.38, 10),
+            score(0.42, 5), score(0.36, 2),
+        )
+        val result = detector.detect(scores)
+        assertEquals(TensionPattern.STABLE, result.pattern)
+    }
+
+    @Test
+    fun `peak date is centroid of cluster, not just max window`() {
+        val scores = listOf(
+            score(0.2, 30),
+            score(0.9, 20), score(1.0, 18), score(0.9, 16),  // symmetric cluster around week 18
+            score(0.2, 5),  score(0.15, 2), score(0.1, 1),
+        )
+        val result = detector.detect(scores)
+        // Peak date should be near week(18) — centroid of the 3-window cluster
+        val clusterCenter = week(18)
+        val diffDays = Math.abs(result.peakDate.epochSecond - clusterCenter.epochSecond) / 86400
+        assertTrue(diffDays < 14, "Peak date should be near cluster centroid, was $diffDays days off")
+    }
+}

@@ -1,0 +1,11 @@
+database:
+  dataSources:
+    factions:
+      type: NEO4J
+      userName: neo4j
+      password: brahmsian
+      host: localhost
+      port: 7687
+      # Use 'neo4j' default DB for testcontainer compatibility.
+      # Set USE_LOCAL_NEO4J=true to hit the real factions database instead.
+      databaseName: neo4j
