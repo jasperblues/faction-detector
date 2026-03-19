@@ -234,15 +234,20 @@ class GitHubClient(private val properties: GitHubProperties) {
         // Use desc (newest-first) for recent or mid-period windows — skip from now back to `until`.
         // Threshold: 8 years covers pre-2018 deep history (e.g. Node 2013-2015) but not
         // more recent windows (e.g. Vue 2018-2020) where desc is more efficient.
-        val historical = until != null && until.isBefore(Instant.now().minus(8 * 365L, java.time.temporal.ChronoUnit.DAYS))
+        // Always fill forward (asc) — ascending pages are immutable once full and
+        // permanently cacheable. First run on a new repo is slow; all subsequent runs
+        // load cached pages and only fetch the uncached tail from the API.
+        // Desc gave faster cold-cache live runs but offered no cache benefit — once the
+        // page cache is warm (after any historical analysis on the same repo), asc is
+        // faster even for live windows.
+        val historical = true
         val sort = if (historical) "sort=created&direction=asc" else "sort=created&direction=desc"
 
         val results = mutableListOf<GitHubPr>()
         var page = 1
         while (results.size < properties.maxPrsPerRepo) {
             val url = "/repos/$owner/$repo/pulls?state=closed&per_page=100&page=$page&$sort"
-            logger.info("Fetching PR page {} ({} matched so far)...", page, results.size)
-            val batch = getWithRateLimitHandling<List<GitHubPr>>(url) ?: break
+            val batch = fetchPrPage(owner, repo, page, url, historical) ?: break
             if (batch.isEmpty()) break
             val filtered = batch.filter { pr ->
                 pr.mergedAt != null &&
@@ -260,6 +265,42 @@ class GitHubClient(private val properties: GitHubProperties) {
             page++
         }
         return results
+    }
+
+    /**
+     * Returns a page of PRs, using cache for historical ascending pages.
+     * Ascending pages are immutable once full — a PR created in 2014 will always
+     * be on the same page. Only full pages (100 items) are cached; the trailing
+     * partial page is always re-fetched to pick up newly merged PRs.
+     */
+    private fun fetchPrPage(owner: String, repo: String, page: Int, url: String, historical: Boolean): List<GitHubPr>? {
+        if (historical) {
+            val cached = loadCachedPrPage(owner, repo, page)
+            if (cached != null) {
+                logger.info("PR page cache hit: {}/{} page {} ({} PRs)", owner, repo, page, cached.size)
+                return cached
+            }
+        }
+        val fetched = getWithRateLimitHandling<List<GitHubPr>>(url) ?: return null
+        if (historical && fetched.size == 100) {
+            cachePrPage(owner, repo, page, fetched)
+            logger.info("Cached PR page {}/{} page {}", owner, repo, page)
+        }
+        return fetched
+    }
+
+    private fun prPageCacheFile(owner: String, repo: String, page: Int): Path =
+        cacheDir.resolve("${owner}_${repo}_prs_asc_p${page}.json")
+
+    private fun loadCachedPrPage(owner: String, repo: String, page: Int): List<GitHubPr>? {
+        val file = prPageCacheFile(owner, repo, page)
+        if (!file.exists()) return null
+        return cacheMapper.readValue(file.readText())
+    }
+
+    private fun cachePrPage(owner: String, repo: String, page: Int, prs: List<GitHubPr>) {
+        cacheDir.createDirectories()
+        prPageCacheFile(owner, repo, page).writeText(cacheMapper.writeValueAsString(prs))
     }
 
     private fun fetchReviews(owner: String, repo: String, prNumber: Int): List<GitHubReview> =

@@ -82,12 +82,17 @@ class ExodusDetector {
         val massBefore = mass.subList(maxOf(0, stepIdx - MIN_STABLE_WINDOWS), stepIdx).average()
         val massAfter = mass.subList(stepIdx, minOf(mass.size, stepIdx + MIN_STABLE_WINDOWS)).average()
 
+        val totalProjectCentrality = centrality.values.sum()
+        val departedCentrality = departed.sumOf { it.centrality }
+
         return ExodusDetection(
             inferredDate = windows[stepIdx].windowStart,
             departedContributors = departed,
             weightedMassBefore = massBefore,
             weightedMassAfter = massAfter,
             dropFraction = if (massBefore > 0) (massBefore - massAfter) / massBefore else 0.0,
+            totalProjectCentrality = totalProjectCentrality,
+            departureCentralityFraction = if (totalProjectCentrality > 0) departedCentrality / totalProjectCentrality else 0.0,
         )
     }
 

@@ -21,13 +21,19 @@ import com.embabel.agent.api.annotation.Agent
 import com.embabel.agent.api.common.OperationContext
 import com.embabel.agent.domain.io.UserInput
 import com.embabel.agent.domain.library.HasContent
+import com.embabel.faction.domain.ExodusDetection
+import com.embabel.faction.domain.FractureDetection
 import com.embabel.faction.domain.PairAnomaly
+import com.embabel.faction.domain.ReviewEdge
 import com.embabel.faction.domain.ScoredPair
 import com.embabel.faction.domain.SplitPrediction
+import com.embabel.faction.domain.TensionPattern
 import com.embabel.faction.domain.WindowedScore
 import com.embabel.faction.github.GitHubClient
 import com.embabel.faction.graph.GdsService
 import com.embabel.faction.graph.GraphBuilder
+import kotlin.math.roundToInt
+import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Profile
 import java.time.Instant
 import java.time.LocalDate
@@ -97,12 +103,22 @@ data class SplitPredictionResult(
             rows += "Severity" to f.severity.name
             rows += "Confidence" to "${"%.0f".format(prediction.confidence * 100)}%"
             rows += "Peak tension" to "${f.peakDate.toString().take(10)} (asymmetry ${"%.2f".format(f.peakAsymmetry)})"
-            rows += "Status" to if (f.isResolved) "RESOLVED" else if (f.isRising) "UNRESOLVED — RISING" else "UNRESOLVED"
+            rows += "Status" to when {
+                f.isReEscalating -> "RESOLVED — POST-EXODUS RE-ESCALATION"
+                f.pattern == TensionPattern.ATTRITION -> "RESOLVED — NATURAL ATTRITION"
+                f.isResolved -> "RESOLVED"
+                f.isRising -> "UNRESOLVED — RISING"
+                else -> "UNRESOLVED"
+            }
             f.fractureDate?.let { rows += "Fracture event" to it.toString().take(10) }
             f.resolutionDate?.let { rows += "Resolution" to it.toString().take(10) }
+            if (prediction.backfilled) rows += "Baseline" to "backfilled +6mo prior"
             if (e != null) {
                 rows += "Exodus date" to e.inferredDate.toString().take(10)
                 rows += "Mass drop" to "${"%.0f".format(e.dropFraction * 100)}%  (${"%.1f".format(e.weightedMassBefore)} → ${"%.1f".format(e.weightedMassAfter)})"
+                val departed = (e.dropFraction * 100).roundToInt()
+                rows += "Split ratio" to "$departed:${100 - departed}  ${if (departed >= 40) "— near-equal split, departing faction was viable" else if (departed >= 30) "— minority departure" else "— small departure"}"
+                rows += "Core impact" to "${"%.1f".format(e.departureCentralityFraction * 100)}% of total project centrality"
                 rows += "Departed" to e.departedContributors.take(5).joinToString("  ") { "${it.login}(${it.centrality.toInt()})" }
             }
             prediction.predictedSplitDate?.let { rows += "Predicted split" to it.toString().take(10) }
@@ -143,6 +159,7 @@ class FactionDetectorAgent(
     private val fractureDetector: FractureDetector,
     private val exodusDetector: ExodusDetector,
 ) {
+    private val logger = LoggerFactory.getLogger(javaClass)
 
     @Action
     fun parseRequest(userInput: UserInput): AnalysisRequest = parseAnalysisInput(userInput.content)
@@ -157,6 +174,8 @@ class FactionDetectorAgent(
         return FetchResult(
             owner = request.owner,
             repo = "${request.owner}/${request.repo}",
+            since = request.since,
+            until = request.until,
             windowedScores = windowedScores,
             flaggedPairs = flaggedPairs,
             recentPrNumbers = edges.mapNotNull { it.prNumber }.distinct().take(50),
@@ -181,6 +200,8 @@ class FactionDetectorAgent(
         val communityAssignments = gdsService.queryCommunities(fetch.runId)
         return WindowedScores(
             repo = fetch.repo,
+            since = fetch.since,
+            until = fetch.until,
             scores = fetch.windowedScores,
             scoredPairs = scoredPairs,
             communityAssignments = communityAssignments,
@@ -192,9 +213,36 @@ class FactionDetectorAgent(
     @AchievesGoal(description = "Faction analysis with split prediction narrative complete")
     @Action
     fun generateNarrative(windowed: WindowedScores, context: OperationContext): SplitPredictionResult {
-        val scores = windowed.scores
-        val exodus = exodusDetector.detect(windowed.edges)
-        val fracture = fractureDetector.detect(scores, exodus)
+        var scores = windowed.scores
+        var allEdges = windowed.edges
+        var backfilled = false
+
+        var exodus = exodusDetector.detect(allEdges)
+        var fracture = fractureDetector.detect(scores, exodus)
+
+        // Backfill: if we classified EXODUS with a confirmed departure but the window opens
+        // mid-tension (first 8 windows already elevated), fetch 6 months prior to find the
+        // true calm baseline. A single genuine calm period before the cluster changes the
+        // classification to FRACTURE_OCCURRED.
+        val earlyMean = scores.take(8).map { it.asymmetryRatio }.average().takeIf { !it.isNaN() } ?: 0.0
+        if (fracture.pattern == TensionPattern.EXODUS
+            && exodus != null
+            && earlyMean > 0.5
+        ) {
+            val owner = windowed.repo.substringBefore("/")
+            val repo = windowed.repo.substringAfter("/")
+            val backfillSince = windowed.since.minus(180, ChronoUnit.DAYS)
+            logger.info("Backfilling baseline: fetching {}/{} from {} to {}", owner, repo, backfillSince.toString().take(10), windowed.since.toString().take(10))
+            val backfillEdges = gitHubClient.fetchReviewEdges(owner, repo, backfillSince, windowed.since)
+            if (backfillEdges.isNotEmpty()) {
+                logger.info("Backfill complete: {} edges, re-running fracture detection", backfillEdges.size)
+                allEdges = backfillEdges + allEdges
+                scores = asymmetryScorer.score(allEdges, backfillSince, until = windowed.until)
+                exodus = exodusDetector.detect(allEdges)
+                fracture = fractureDetector.detect(scores, exodus)
+                backfilled = true
+            }
+        }
 
         val corePairs = windowed.scoredPairs.filter { p ->
             windowed.communityAssignments[p.reviewer] != null &&
@@ -242,7 +290,20 @@ class FactionDetectorAgent(
         val avgFactionSignal = windowed.scoredPairs.map { it.factionSignal }.average()
             .takeIf { !it.isNaN() } ?: 0.0
 
-        val confidence = computeConfidence(fracture, crossCommunityScore, avgFactionSignal, exodus, factionFormationScore, peakModularity)
+        // Post-exodus asymmetry delta: did the departure structurally change the graph?
+        // |delta| near zero = normal churn. Large |delta| = structurally load-bearing departure.
+        val asymmetryDelta = if (exodus != null) {
+            val exodusDate = exodus.inferredDate
+            val preWindows = scores.filter { it.windowStart.isBefore(exodusDate) }.takeLast(4)
+            val postWindows = scores.filter { !it.windowStart.isBefore(exodusDate) }.take(4)
+            if (preWindows.isNotEmpty() && postWindows.isNotEmpty()) {
+                val preMean = preWindows.map { it.asymmetryRatio }.average()
+                val postMean = postWindows.map { it.asymmetryRatio }.average()
+                postMean - preMean
+            } else null
+        } else null
+
+        val confidence = computeConfidence(fracture, crossCommunityScore, avgFactionSignal, exodus, factionFormationScore, peakModularity, asymmetryDelta)
 
         val pairSummary = windowed.scoredPairs
             .sortedByDescending { it.factionSignal }
@@ -269,7 +330,11 @@ class FactionDetectorAgent(
             if (fracture.isResolved) {
                 fracture.fractureDate?.let { appendLine("  Fracture event: ~${it.toString().take(10)} (drop followed peak)") }
                 fracture.resolutionDate?.let { appendLine("  Resolution: ${it.toString().take(10)} (asymmetry returned to baseline)") }
-                appendLine("  Status: RESOLVED — tension released, likely fork or mass departure")
+                val resolvedStatus = when (fracture.pattern) {
+                    TensionPattern.ATTRITION -> "RESOLVED — natural contributor lifecycle turnover; asymmetry rose as coverage thinned, not from adversarial dynamics. Call to action: succession planning and knowledge transfer, NOT governance intervention."
+                    else -> "RESOLVED — tension released, likely fork or mass departure"
+                }
+                appendLine("  Status: $resolvedStatus")
             } else {
                 appendLine("  Status: UNRESOLVED — peak is current, no resolution signal detected")
                 if (fracture.isRising) appendLine("  Trajectory: RISING — asymmetry increasing in recent windows")
@@ -280,6 +345,15 @@ class FactionDetectorAgent(
             appendLine("Contributor exodus detection:")
             appendLine("  Inferred departure event: ${exodus.inferredDate.toString().take(10)}")
             appendLine("  Weighted contributor mass: ${"%.1f".format(exodus.weightedMassBefore)} → ${"%.1f".format(exodus.weightedMassAfter)} (${"%.0f".format(exodus.dropFraction * 100)}% drop)")
+            appendLine("  Core impact: ${"%.1f".format(exodus.departureCentralityFraction * 100)}% of total project centrality (pool: ${"%.0f".format(exodus.totalProjectCentrality)})")
+            if (asymmetryDelta != null) {
+                val direction = when {
+                    asymmetryDelta > 0.05 -> "ROSE after departure (graph structurally destabilised)"
+                    asymmetryDelta < -0.05 -> "FELL after departure (departed contributors were tension source)"
+                    else -> "UNCHANGED after departure (likely routine churn)"
+                }
+                appendLine("  Post-exodus asymmetry delta: ${"%.2f".format(asymmetryDelta)} — $direction")
+            }
             appendLine("  Departed contributors (by centrality):")
             exodus.departedContributors.take(10).forEach { d ->
                 appendLine("    ${d.login} (centrality=${"%.0f".format(d.centrality)}, last active ${d.lastActiveWindow.toString().take(10)})")
@@ -310,9 +384,12 @@ class FactionDetectorAgent(
             ${if (pairSummary.isNotBlank()) "Top reviewer→author pairs by faction signal (NITPICKY+NON_BLOCKING rate):\n$pairSummary" else ""}
 
             Write a concise 2-3 paragraph analysis:
-            1. What factions formed and why — or what is currently building — referencing specific contributors and community groupings
+            1. ${if (fracture.pattern == TensionPattern.ATTRITION) "Who left and why — frame as natural contributor lifecycle, not faction conflict. Reference specific contributors and their likely motivations." else "What factions formed and why — or what is currently building — referencing specific contributors and community groupings"}
             2. Risk level consistent with the fracture pattern AND the confidence score above
-            3. ${if (fracture.isResolved) "What this historical event tells us about the project's trajectory" else "Recommendations for maintainers to de-escalate"}
+            3. ${when (fracture.pattern) {
+                TensionPattern.ATTRITION -> "Concrete succession planning and knowledge transfer recommendations. Do NOT suggest governance intervention or frame this as a political conflict."
+                else -> if (fracture.isResolved) "What this historical event tells us about the project's trajectory" else "Recommendations for maintainers to de-escalate"
+            }}
             """.trimIndent()
         )
 
@@ -325,29 +402,44 @@ class FactionDetectorAgent(
             confidence = confidence,
             fracture = fracture,
             exodus = exodus,
+            backfilled = backfilled,
             narrative = narrative,
         )
         return SplitPredictionResult(prediction)
     }
 
     private fun computeConfidence(
-        fracture: com.embabel.faction.domain.FractureDetection,
+        fracture: FractureDetection,
         crossCommunityScore: Double,
         avgFactionSignal: Double,
-        exodus: com.embabel.faction.domain.ExodusDetection? = null,
+        exodus: ExodusDetection? = null,
         factionFormationScore: Double = 0.0,
         peakModularity: Double = 0.0,
+        asymmetryDelta: Double? = null,
     ): Double {
         // Past fracture: exodus drop fraction is the signal (how many key people left)
         // Pending fracture: cross-community adversarial reviews are the leading indicator
         val communitySignal = exodus?.dropFraction ?: crossCommunityScore
         val base = fracture.peakAsymmetry * 0.5 + communitySignal * 0.3 + avgFactionSignal * 0.2
         return when (fracture.pattern) {
-            com.embabel.faction.domain.TensionPattern.FRACTURE_OCCURRED ->
+            TensionPattern.FRACTURE_OCCURRED ->
                 (base + 0.15).coerceIn(0.0, 1.0)
-            com.embabel.faction.domain.TensionPattern.EXODUS ->
-                (base + 0.10).coerceIn(0.0, 1.0)
-            com.embabel.faction.domain.TensionPattern.FRACTURE_IMMINENT -> {
+            TensionPattern.EXODUS -> {
+                // Large projects always have contributors leaving for normal reasons (new jobs, burnout).
+                // What distinguishes a faction exodus from routine churn is whether the departure
+                // structurally changed the review graph. If asymmetry barely moves after the
+                // departure, it was churn. If asymmetry shifts significantly (either direction),
+                // the departure was load-bearing — the departed contributors were either holding
+                // tension together or bridging across communities.
+                // Normalise |delta| against 0.30 (a 30-point swing is clearly structural).
+                // Floor at 0.5 so we never fully suppress a confirmed departure with mass drop.
+                // Null delta (insufficient post-exodus windows) = no penalty applied.
+                val structuralFactor = if (asymmetryDelta != null)
+                    (Math.abs(asymmetryDelta) / 0.30).coerceIn(0.0, 1.0).let { it * 0.5 + 0.5 }
+                else 1.0
+                ((base + 0.10) * structuralFactor).coerceIn(0.0, 1.0)
+            }
+            TensionPattern.FRACTURE_IMMINENT -> {
                 val risingBonus = if (fracture.isRising) 0.10 else 0.0
                 val corroborationBonus = if (fracture.peakAsymmetry >= 0.8 && factionFormationScore >= 0.3) 0.10 else 0.0
                 val raw = fracture.peakAsymmetry * 0.40 + factionFormationScore * 0.25 +
@@ -358,7 +450,14 @@ class FactionDetectorAgent(
                 val modularityFactor = (peakModularity / 0.20).coerceIn(0.0, 1.0)
                 (raw * modularityFactor).coerceIn(0.0, 1.0)
             }
-            com.embabel.faction.domain.TensionPattern.STABLE ->
+            TensionPattern.ATTRITION -> {
+                // Natural turnover: confidence reflects departure scale (succession planning urgency),
+                // not adversarial tension. Cap at 0.65 — we never have high confidence that
+                // natural churn is a faction event. Floor at 0.30 so the signal isn't dismissed.
+                val departureFraction = exodus?.dropFraction ?: 0.0
+                (0.30 + departureFraction * 0.5).coerceIn(0.30, 0.65)
+            }
+            TensionPattern.STABLE ->
                 base.coerceIn(0.0, 1.0)
         }
     }
@@ -368,20 +467,24 @@ class FactionDetectorAgent(
 data class FetchResult(
     val owner: String,
     val repo: String,
+    val since: Instant,
+    val until: Instant?,
     val windowedScores: List<WindowedScore>,
     val flaggedPairs: List<PairAnomaly>,
     val recentPrNumbers: List<Int>,
-    val edges: List<com.embabel.faction.domain.ReviewEdge>,
+    val edges: List<ReviewEdge>,
     val runId: String,
 )
 
 /** Intermediate domain object carrying windowed scores, LLM-scored pairs, and GDS community assignments. */
 data class WindowedScores(
     val repo: String,
+    val since: Instant,
+    val until: Instant?,
     val scores: List<WindowedScore>,
     val scoredPairs: List<ScoredPair> = emptyList(),
     /** Login → communityId from GDS Louvain on the anomaly-weighted review graph. */
     val communityAssignments: Map<String, Int> = emptyMap(),
-    val edges: List<com.embabel.faction.domain.ReviewEdge> = emptyList(),
+    val edges: List<ReviewEdge> = emptyList(),
     val runId: String,
 )

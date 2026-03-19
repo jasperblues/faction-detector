@@ -47,8 +47,20 @@ class FractureDetector {
         /** Minimum post-cluster windows needed to confirm resolution. */
         private const val MIN_POST_WINDOWS = 3
 
-        /** Pre-cluster mean below this + peak above 0.7 = sharp rise (fracture, not exodus). */
-        private const val SHARP_RISE_BASELINE = 0.4
+        /** Peak must exceed pre-cluster mean by at least this delta to count as a sharp rise.
+         *  Absolute baseline threshold is insufficient for commercially-contested projects
+         *  (Redis, Terraform) where structural asymmetry bakes in a higher resting level.
+         *  A delta-based check catches genuine spikes regardless of project baseline.
+         *  Future: make this adaptive based on community centrality concentration. */
+        private const val SHARP_RISE_DELTA = 0.4
+
+        /** ATTRITION: core impact below this fraction is consistent with natural turnover.
+         *  At 12%, departure is a succession problem, not a faction problem. */
+        private const val ATTRITION_CORE_THRESHOLD = 0.12
+
+        /** ATTRITION: active-window mass drop below this fraction rules out coordinated departure.
+         *  A 33% drop could be an organised faction; below that it's more likely natural churn. */
+        private const val ATTRITION_DROP_THRESHOLD = 0.33
     }
 
     fun detect(scores: List<WindowedScore>, exodus: ExodusDetection? = null): FractureDetection {
@@ -74,14 +86,32 @@ class FractureDetector {
         val peakIdx = scores.indexOf(peakWindow)
         val peakIsRecent = peakIdx >= scores.size - RECENT_WINDOW_COUNT
         val exodusAfterPeak = exodus != null && exodus.inferredDate.isAfter(peakDate)
-        val isResolved = (afterCluster.size >= MIN_POST_WINDOWS &&
-                postClusterMean < peakWindow.asymmetryRatio * RESOLUTION_RATIO)
-                || exodusAfterPeak
-        // Sharp rise from calm: pre-cluster mean below baseline, or — when data starts mid-fracture
-        // (no pre-cluster windows) — post-cluster dips clearly below 0.4, proving the high asymmetry
-        // was temporary rather than a persistent structural baseline.
+        val asymmetryDropped = afterCluster.size >= MIN_POST_WINDOWS &&
+                postClusterMean < peakWindow.asymmetryRatio * RESOLUTION_RATIO
+        // Exodus after the peak counts as resolution — the departure was the fracture event.
+        // When exodus is near the end of the analysis window, asymmetryDropped may not fire
+        // (not enough settled post-cluster data), so we keep exodusAfterPeak as an OR.
+        val isResolved = asymmetryDropped || exodusAfterPeak
+        // Re-escalation: exodus resolved the original tension, but post-exodus windows show
+        // renewed high asymmetry — the graph didn't heal, a new crisis is forming.
+        // We look only at windows starting on or after the exodus date to avoid conflating
+        // re-escalation with the run-up to the exodus itself (which is also high asymmetry).
+        // Requires at least 2 post-exodus windows — if exodus is at the end of the window
+        // there's no data to confirm re-escalation.
+        val isReEscalating = isResolved && exodusAfterPeak && exodus != null && run {
+            val postExodusWindows = scores
+                .filter { !it.windowStart.isBefore(exodus.inferredDate) }
+                .takeLast(RECENT_WINDOW_COUNT)
+            postExodusWindows.size >= 2 &&
+                postExodusWindows.map { it.asymmetryRatio }.average() >= TENSION_THRESHOLD
+        }
+        // Sharp rise: peak exceeds pre-cluster mean by SHARP_RISE_DELTA, regardless of absolute level.
+        // Handles commercially-contested projects (Redis, Terraform) where structural asymmetry
+        // sets a higher resting baseline — what matters is how far the peak rose from *that* baseline.
+        // When data starts mid-fracture (no pre-cluster), fall back to post-cluster dip as evidence
+        // the high asymmetry was temporary rather than a persistent structural baseline.
         val isSharpRise = peakWindow.asymmetryRatio >= 0.7 && if (beforeCluster.isNotEmpty()) {
-            preClusterMean < SHARP_RISE_BASELINE
+            peakWindow.asymmetryRatio - preClusterMean > SHARP_RISE_DELTA
         } else {
             afterCluster.any { it.asymmetryRatio < 0.4 }
         }
@@ -92,11 +122,18 @@ class FractureDetector {
             peakIsRecent && !isResolved -> TensionPattern.FRACTURE_IMMINENT
             !peakIsRecent && !isResolved -> TensionPattern.FRACTURE_IMMINENT // sustained unresolved = still active
             isResolved && isSharpRise -> TensionPattern.FRACTURE_OCCURRED
+            isResolved && exodus != null && isAttrition(exodus) -> TensionPattern.ATTRITION
             isResolved -> TensionPattern.EXODUS
             else -> TensionPattern.STABLE
         }
 
         val severity = when {
+            // ATTRITION severity is departure-scale driven, not peak asymmetry — asymmetry
+            // rises as coverage thins, not because of adversarial dynamics.
+            pattern == TensionPattern.ATTRITION -> when {
+                exodus != null && (exodus.dropFraction >= 0.20 || exodus.departureCentralityFraction >= 0.07) -> TensionSeverity.MODERATE
+                else -> TensionSeverity.LOW
+            }
             peakWindow.asymmetryRatio >= 0.85 -> TensionSeverity.EXTREME
             peakWindow.asymmetryRatio >= 0.65 -> TensionSeverity.HIGH
             peakWindow.asymmetryRatio >= 0.45 -> TensionSeverity.MODERATE
@@ -123,6 +160,7 @@ class FractureDetector {
             resolutionDate = resolutionDate,
             isResolved = isResolved,
             isRising = isRising,
+            isReEscalating = isReEscalating,
         )
     }
 
@@ -147,6 +185,16 @@ class FractureDetector {
         while (right < scores.size - 1 && scores[right + 1].asymmetryRatio >= TENSION_THRESHOLD) right++
         return scores.subList(left, right + 1)
     }
+
+    /**
+     * Returns true when an exodus looks like natural contributor lifecycle turnover rather than
+     * a coordinated faction departure. Both conditions must hold:
+     * - Core impact is small (< 12% of total project centrality) — not load-bearing contributors.
+     * - Active-window mass drop is modest (< 33%) — no mass coordinated exit.
+     */
+    private fun isAttrition(exodus: ExodusDetection): Boolean =
+        exodus.departureCentralityFraction < ATTRITION_CORE_THRESHOLD &&
+            exodus.dropFraction < ATTRITION_DROP_THRESHOLD
 
     /** Asymmetry-weighted centroid of the cluster — biased toward the hottest windows. */
     private fun clusterCentroid(cluster: List<WindowedScore>): Instant {

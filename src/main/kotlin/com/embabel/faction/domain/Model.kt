@@ -97,11 +97,15 @@ data class WindowedScore(
 enum class TensionPattern {
     /** No significant asymmetry detected. */
     STABLE,
+    /** High-centrality contributors leaving through natural turnover, not faction dynamics.
+     *  Asymmetry rises as coverage thins but there is no adversarial review signal.
+     *  Call to action: succession planning and knowledge transfer, not governance intervention. */
+    ATTRITION,
     /** Tension is current and unresolved — split may be imminent. */
     FRACTURE_IMMINENT,
     /** Sharp spike in the past followed by resolution — likely a fork or mass departure. */
     FRACTURE_OCCURRED,
-    /** Gradual sustained elevation that resolved — slow contributor drain. */
+    /** Gradual sustained elevation that resolved — coordinated faction-driven departure. */
     EXODUS,
 }
 
@@ -114,6 +118,8 @@ enum class TensionSeverity { LOW, MODERATE, HIGH, EXTREME }
  * [fractureDate] is the first window after the peak where resolution begins (null if unresolved).
  * [resolutionDate] is when asymmetry returned to near-baseline (null if unresolved).
  * [isRising] is true when recent windows are trending upward.
+ * [isReEscalating] is true when a resolved event is followed by renewed high asymmetry —
+ * the departure happened but the graph didn't heal.
  */
 data class FractureDetection(
     val pattern: TensionPattern,
@@ -125,6 +131,7 @@ data class FractureDetection(
     val resolutionDate: Instant?,
     val isResolved: Boolean,
     val isRising: Boolean,
+    val isReEscalating: Boolean = false,
 )
 
 /**
@@ -142,6 +149,11 @@ data class DepartedContributor(
  * An inferred exodus event detected from a step-change in weighted contributor activity.
  * [inferredDate] is the first window of the drop.
  * [dropFraction] is (massBefore - massAfter) / massBefore.
+ * [totalProjectCentrality] is the sum of all contributor centrality scores in the analysis window.
+ * [departureCentralityFraction] is sum(departed centrality) / totalProjectCentrality — normalises
+ * the impact of the departure against the full historical contributor pool, so a 31% active-window
+ * drop on a mature project with thousands of contributors reads differently than the same drop
+ * on a small project where the departed contributors were half the ecosystem.
  */
 data class ExodusDetection(
     val inferredDate: Instant,
@@ -149,6 +161,8 @@ data class ExodusDetection(
     val weightedMassBefore: Double,
     val weightedMassAfter: Double,
     val dropFraction: Double,
+    val totalProjectCentrality: Double,
+    val departureCentralityFraction: Double,
 )
 
 /**
@@ -162,5 +176,6 @@ data class SplitPrediction(
     val confidence: Double,
     val fracture: FractureDetection? = null,
     val exodus: ExodusDetection? = null,
+    val backfilled: Boolean = false,
     val narrative: String = "",
 )
