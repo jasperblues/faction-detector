@@ -76,6 +76,17 @@ data class GitHubReviewComment(
 )
 
 /**
+ * Removes any edges whose timestamp falls outside [since, until).
+ * Guards against per-PR review caches that were populated by a wider window run —
+ * a PR created before `until` may have reviews submitted after `until`, and those
+ * cached reviews must be excluded from the bounded analysis.
+ */
+internal fun List<ReviewEdge>.filterEdgesByWindow(since: Instant, until: Instant?): List<ReviewEdge> =
+    filter { edge ->
+        !edge.timestamp.isBefore(since) && (until == null || edge.timestamp.isBefore(until))
+    }
+
+/**
  * GitHub REST API client.
  * Handles pagination via Link headers and exponential backoff on rate limits.
  */
@@ -113,19 +124,20 @@ class GitHubClient(private val properties: GitHubProperties) {
         val prs = fetchAllPrs(owner, repo, since, until)
         logger.info("Found {} merged PRs", prs.size)
 
-        val reviewEdges = if (properties.edgeSource != EdgeSource.COMMENTS) buildReviewEdges(owner, repo, prs) else emptyList()
-        val commentEdges = if (properties.edgeSource != EdgeSource.REVIEWS) buildCommentEdges(owner, repo, prs, reviewEdges) else emptyList()
+        val reviewEdges = if (properties.edgeSource != EdgeSource.COMMENTS) buildReviewEdges(owner, repo, prs, until) else emptyList()
+        val commentEdges = if (properties.edgeSource != EdgeSource.REVIEWS) buildCommentEdges(owner, repo, prs, reviewEdges, until) else emptyList()
         val total = reviewEdges + commentEdges
         logger.info("Built {} edges ({} review, {} comment) from {} PRs", total.size, reviewEdges.size, commentEdges.size, prs.size)
 
-        if (total.isNotEmpty()) {
+        val bounded = total.filterEdgesByWindow(since, until)
+        if (bounded.isNotEmpty()) {
             cacheDir.createDirectories()
-            cacheFile.writeText(cacheMapper.writeValueAsString(total))
-            logger.info("Cached {} edges to {}", total.size, cacheFile)
+            cacheFile.writeText(cacheMapper.writeValueAsString(bounded))
+            logger.info("Cached {} edges to {}", bounded.size, cacheFile)
         } else {
             logger.warn("Fetch returned no edges — skipping cache write for {}/{}", owner, repo)
         }
-        return total
+        return bounded
     }
 
     private fun cacheFile(owner: String, repo: String, since: Instant, until: Instant?): Path {
@@ -138,7 +150,7 @@ class GitHubClient(private val properties: GitHubProperties) {
         && !this.endsWith("-bot")
         && !this.contains("-bot-")
 
-    private fun buildReviewEdges(owner: String, repo: String, prs: List<GitHubPr>): List<ReviewEdge> {
+    private fun buildReviewEdges(owner: String, repo: String, prs: List<GitHubPr>, until: Instant? = null): List<ReviewEdge> {
         return prs.flatMapIndexed { idx, pr ->
             if (idx % 50 == 0) logger.info("Fetching reviews for PR {}/{} (PR #{})", idx + 1, prs.size, pr.number)
             val reviews = fetchReviews(owner, repo, pr.number)
@@ -150,6 +162,7 @@ class GitHubClient(private val properties: GitHubProperties) {
                 if (review.user.login == pr.user.login) return@mapNotNull null
                 if (!review.user.login.isHumanContributor()) return@mapNotNull null
                 val reviewedAt = Instant.parse(review.submittedAt)
+                if (until != null && reviewedAt.isAfter(until)) return@mapNotNull null
                 val hoursToFirstReview = java.time.Duration.between(prCreated, reviewedAt).toHours().toDouble()
                 val daysMerged = prMerged?.let {
                     java.time.Duration.between(reviewedAt, it).toDays().toDouble()
@@ -179,6 +192,7 @@ class GitHubClient(private val properties: GitHubProperties) {
         repo: String,
         prs: List<GitHubPr>,
         existingEdges: List<ReviewEdge>,
+        until: Instant? = null,
     ): List<ReviewEdge> {
         val reviewedPrsByReviewer = existingEdges.groupBy { it.reviewer }.mapValues { (_, edges) ->
             edges.mapNotNull { it.prNumber }.toSet()
@@ -193,17 +207,20 @@ class GitHubClient(private val properties: GitHubProperties) {
                     .filter { it.user.login != pr.user.login && it.user.login.isHumanContributor() }
                     .groupBy { it.user.login }
                     .forEach { (login, comments) ->
-                        merge(login, comments.mapNotNull { it.createdAt?.let { ts -> Instant.parse(ts) } }) { a, b -> a + b }
+                        merge(login, comments.mapNotNull { it.createdAt?.let { ts -> Instant.parse(ts) } }
+                            .filter { until == null || it.isBefore(until) }) { a, b -> a + b }
                     }
                 fetchIssueComments(owner, repo, pr.number)
                     .filter { it.user.login != pr.user.login && it.user.login.isHumanContributor() }
                     .groupBy { it.user.login }
                     .forEach { (login, comments) ->
-                        merge(login, comments.map { Instant.parse(it.createdAt) }) { a, b -> a + b }
+                        merge(login, comments.map { Instant.parse(it.createdAt) }
+                            .filter { until == null || it.isBefore(until) }) { a, b -> a + b }
                     }
             }
             allCommenters
                 .mapNotNull { (commenter, timestamps) ->
+                    if (timestamps.isEmpty()) return@mapNotNull null
                     // In BOTH mode, skip if a formal review edge already covers this reviewer+PR
                     if (reviewedPrsByReviewer[commenter]?.contains(pr.number) == true) return@mapNotNull null
                     val firstCommentAt = timestamps.minOrNull() ?: prCreated
@@ -269,22 +286,31 @@ class GitHubClient(private val properties: GitHubProperties) {
 
     /**
      * Returns a page of PRs, using cache for historical ascending pages.
-     * Ascending pages are immutable once full — a PR created in 2014 will always
-     * be on the same page. Only full pages (100 items) are cached; the trailing
-     * partial page is always re-fetched to pick up newly merged PRs.
+     * Full pages (100 items) are permanently cached — a PR created in 2014 always
+     * lands on the same page number in asc order, so full pages are immutable.
+     * Partial pages are cached too, but only as a resume checkpoint: on load we
+     * check if the cached size is still < 100 and re-fetch, because the page may
+     * have grown since it was last seen. This means a killed or rate-limited run
+     * resumes from its last successfully fetched page rather than starting over.
      */
     private fun fetchPrPage(owner: String, repo: String, page: Int, url: String, historical: Boolean): List<GitHubPr>? {
         if (historical) {
             val cached = loadCachedPrPage(owner, repo, page)
             if (cached != null) {
-                logger.info("PR page cache hit: {}/{} page {} ({} PRs)", owner, repo, page, cached.size)
-                return cached
+                if (cached.size == 100) {
+                    logger.info("PR page cache hit: {}/{} page {} ({} PRs)", owner, repo, page, cached.size)
+                    return cached
+                }
+                // Partial page cached — could have grown, re-fetch to pick up new items
+                logger.info("PR page cache stale (partial): {}/{} page {} ({} PRs) — re-fetching", owner, repo, page, cached.size)
             }
         }
         val fetched = getWithRateLimitHandling<List<GitHubPr>>(url) ?: return null
-        if (historical && fetched.size == 100) {
+        if (historical) {
             cachePrPage(owner, repo, page, fetched)
-            logger.info("Cached PR page {}/{} page {}", owner, repo, page)
+            if (fetched.size < 100) {
+                logger.info("Cached PR page {}/{} page {} (partial, {} PRs — resume checkpoint)", owner, repo, page, fetched.size)
+            }
         }
         return fetched
     }
@@ -344,6 +370,12 @@ class GitHubClient(private val properties: GitHubProperties) {
                         val backoff = 2_000L * (attempt + 1)
                         logger.warn("Transient I/O error (attempt {}), retrying in {}ms: {}", attempt + 1, backoff, e.message)
                         Thread.sleep(backoff)
+                    }
+                    // Deserialization failures (GitHub returned an error object instead of a list)
+                    // are expected for deleted forks or inaccessible PRs — downgrade to WARN.
+                    e.message?.contains("extracting response") == true -> {
+                        logger.warn("Skipping {} — unexpected response shape (deleted fork or inaccessible PR?)", url)
+                        return null
                     }
                     else -> {
                         logger.error("Error fetching {}: {}", url, e.message)

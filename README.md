@@ -1,111 +1,133 @@
-<img align="left" src="https://github.com/embabel/embabel-agent/blob/main/embabel-agent-api/images/315px-Meister_der_Weltenchronik_001.jpg?raw=true" width="180">
+<img align="left" src="logo.png" width="180">
 
-# Generated Agent Project
+# Faction Detector
 
-![Build](https://github.com/embabel/kotlin-agent-template/actions/workflows/maven.yml/badge.svg)
+![Build](https://github.com/embabel/faction-detector/actions/workflows/maven.yml/badge.svg)
 
-![Kotlin](https://img.shields.io/badge/kotlin-%237F52FF.svg?style=for-the-badge&logo=kotlin&logoColor=white) ![Spring](https://img.shields.io/badge/spring-%236DB33F.svg?style=for-the-badge&logo=spring&logoColor=white) ![Apache Maven](https://img.shields.io/badge/Apache%20Maven-C71A36?style=for-the-badge&logo=Apache%20Maven&logoColor=white) ![ChatGPT](https://img.shields.io/badge/chatGPT-74aa9c?style=for-the-badge&logo=openai&logoColor=white)
+![Kotlin](https://img.shields.io/badge/kotlin-%237F52FF.svg?style=for-the-badge&logo=kotlin&logoColor=white) ![Spring](https://img.shields.io/badge/spring-%236DB33F.svg?style=for-the-badge&logo=spring&logoColor=white) ![Neo4j](https://img.shields.io/badge/Neo4j-008CC1?style=for-the-badge&logo=neo4j&logoColor=white) ![Apache Maven](https://img.shields.io/badge/Apache%20Maven-C71A36?style=for-the-badge&logo=Apache%20Maven&logoColor=white)
 
 <br clear="left"/>
 
+> *Open source projects fork. Enterprise codebases rot. The review graph tells you which one is coming — and when.*
 
-Starting point for your own agent development using the [Embabel framework](https://github.com/embabel/embabel-agent).
+Gauge the health of open (or closed!) source projects using nothing but pull request comment dynamics.
 
-Uses Spring Boot 3.5.9 and Embabel 0.3.1.
+> ⚠️ **Warning:** This tool can detect forks before they occur. Use responsibly.
 
-Add your magic here!
+📖 **[Read the full analysis: Faction Detection — Reading the Review Graph Before the Fork](https://embabel.com/blog/faction-detector)** — retrodiction results across nodejs, redis, hashicorp/terraform, babel, and a live case with no known resolution yet.
 
-Illustrates:
+Faction Detector analyses GitHub PR review activity to detect contributor faction dynamics and predict project splits. It builds a weighted directed graph of who reviews whom, runs community detection, and scores asymmetry across rolling time windows — then feeds everything into an LLM for narrative analysis.
 
-- An injected demo showing how any Spring component can be injected with an Embabel `Ai` instance to enable it to
-  perform LLM operations.
-- A simple agent
-- Unit tests for an agent verifying prompts and hyperparameters
+Built with [Embabel](https://github.com/embabel/embabel-agent) + Spring Boot + Neo4j + GDS.
 
-> For the Java equivalent, see
-> our [Java agent template](https://github.com/embabel/java-agent-template).
+---
 
-# Running
+## What it detects
 
-Run the shell script to start Embabel under Spring Shell:
+| Pattern | Description |
+|---------|-------------|
+| `FRACTURE_OCCURRED` | Sharp asymmetry spike followed by resolution — fork or mass departure happened |
+| `FRACTURE_IMMINENT` | Peak is current and unresolved — split may be imminent |
+| `EXODUS` | Gradual sustained elevation that resolved — coordinated departure without fork |
+| `ATTRITION` | Natural contributor lifecycle turnover — succession problem, not faction problem |
+| `STABLE` | No significant asymmetry detected |
+
+---
+
+## Example: The node-pocolypse (2013–2015)
+
+```
+faction-detector:> analyse --repo nodejs/node --since 2013-06-01 --until 2015-06-01
+```
+
+```
++----------------+---------------------------------------------------------------------------------+
+| Pattern        | FRACTURE_OCCURRED                                                               |
+| Severity       | EXTREME                                                                         |
+| Confidence     | 80%                                                                             |
+| Peak tension   | 2014-12-10 (asymmetry 1.00)                                                     |
+| Status         | RESOLVED                                                                        |
+| Fracture event | 2015-05-29                                                                      |
+| Resolution     | 2015-01-24                                                                      |
+| Exodus date    | 2015-05-29                                                                      |
+| Mass drop      | 46%  (673.0 → 366.3)                                                            |
+| Split ratio    | 46:54  — near-equal split, departing faction was viable                         |
+| Core impact    | 11.7% of total project centrality                                               |
+| Departed       | piscisaureus(42)  chrisdickinson(27)  brendanashworth(8)  mscdex(8)  domenic(7) |
++----------------+---------------------------------------------------------------------------------+
+```
+
+The io.js fork was announced December 9, 2014. The review graph peaked **November 15** — 3 weeks earlier. The model found the right people, the right month, the right severity from review patterns alone. No commit messages. No mailing lists. No drama threads.
+
+---
+
+## Prerequisites
+
+- JDK 21+
+- Neo4j running locally with GDS plugin installed
+- GitHub personal access token (with `repo` read scope)
+- Anthropic API key (or other Spring AI-compatible LLM)
+
+---
+
+## Running
+
+### 1. GitHub token
+
+Create a personal access token at **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**. It only needs read access to public repositories — no write permissions required.
 
 ```bash
-./scripts/shell.sh
+export FACTION_GITHUB_TOKEN=ghp_...
 ```
 
-There is a single example
-agent, [WriteAndReviewAgent](./src/main/kotlin/com/embabel/template/agent/WriteAndReviewAgent.kt).
-It uses one LLM with a high temperature and creative persona to write a story based on your input,
-then another LLM with a low temperature and different persona to review the story.
+### 2. Anthropic API key
 
-When the Embabel shell comes up, invoke the story agent like this:
+Get an API key at **[console.anthropic.com](https://console.anthropic.com)**.
 
-```
-x "Tell me a story about...[your topic]"
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Try the following other shell commands:
+Add both to your shell profile (`~/.zshrc`, `~/.bashrc`) to avoid setting them each session.
 
-- `demo`: Runs the same agent, invoked programmatically, instead of dynamically based on user input.
-  See [DemoCommands.kt](./src/main/kotlin/com/embabel/template/DemoShell.kt) for the
-  implementation.
-- `animal`:  Runs a simple demo using an Embabel injected `Ai` instance to call an LLM.
-  See [InjectedDemo](./src/main/kotlin/com/embabel/template/injected/InjectedDemo.kt).
+### 3. Start the shell:
 
-## Suggested Next Steps
+```bash
+mvn spring-boot:run
+```
 
-To get a feel for working with Embabel, try the following:
+Analyse a repo:
 
-- Modify the prompts in `WriteAndReviewAgent` and `InjectedDemo`.
-- Experiment with different models and hyperparameters by modifying `withLlm` calls.
-- Integrate your own services, injecting them with Spring. All Embabel `@Agent` classes are Spring beans.
-- Run the tests with `mvn test` and modify them to experiment with prompt verification.
+```bash
+# Named date range
+analyse --repo nodejs/node --since 2013-06-01 --until 2015-06-01
 
-To see tool support, check out the more
-complex [Embabel Agent API Examples](https://github.com/embabel/embabel-agent-examples) repository.
+# Last N days
+analyse --repo redis/redis --days 365
+```
 
-## Model support
+---
 
-Embabel integrates with any LLM supported by Spring AI.
+## How it works
 
-See [LLM integration guide](docs/llm-docs.md) (work in progress).
+1. Fetch all PR review comments from the GitHub API for the repo + date range
+2. Build a directed weighted graph: reviewer → author edges
+3. Score each reviewer→author pair for asymmetry and anomaly vs baseline
+4. Run Neo4j GDS Louvain community detection on the weighted graph
+5. Roll a 30-day window across the period, computing asymmetry ratio per window
+6. Detect peak clusters, classify fracture pattern, detect contributor exodus step-changes
+7. Feed everything into an LLM for narrative analysis
 
-Also see [Spring AI models](https://docs.spring.io/spring-ai/reference/api/index.html).
+---
 
 ## Testing
-
-This repository includes unit tests demonstrating how to test Embabel agents.
-
-### Running Tests
 
 ```bash
 mvn test
 ```
 
-### Unit Tests
-
-Unit tests use Embabel's `FakeOperationContext` and `FakePromptRunner` to test agent actions in isolation without
-calling actual LLMs.
-
-See [WriteAndReviewAgentTest.kt](./src/test/kotlin/com/embabel/template/agent/WriteAndReviewAgentTest.kt) for examples
-of:
-
-- Creating a fake context with `FakeOperationContext.create()`
-- Setting up expected responses with `context.expectResponse()`
-- Verifying prompt content contains expected values
-- Inspecting LLM invocations via `promptRunner.llmInvocations`
-
-```kotlin
-val context = FakeOperationContext.create()
-context.expectResponse(Story("Once upon a time..."))
-
-val story = agent.craftStory(userInput, context.ai())
-
-val prompt = context.llmInvocations.first().messages.first().content
-assertTrue(prompt.contains("knight"))
-```
+---
 
 ## Contributors
 
-[![Embabel contributors](https://contrib.rocks/image?repo=embabel/kotlin-agent-template)](https://github.com/embabel/kotlin-agent-template/graphs/contributors)
-
+[![Faction Detector contributors](https://contrib.rocks/image?repo=embabel/faction-detector)](https://github.com/embabel/faction-detector/graphs/contributors)

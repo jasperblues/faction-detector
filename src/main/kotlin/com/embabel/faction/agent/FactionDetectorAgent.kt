@@ -159,6 +159,11 @@ class FactionDetectorAgent(
     private val fractureDetector: FractureDetector,
     private val exodusDetector: ExodusDetector,
 ) {
+    companion object {
+        /** Minimum review edges for a meaningful analysis. Below this the graph is too sparse
+         *  for asymmetry or community detection to be reliable. */
+        private const val MIN_EDGES = 20
+    }
     private val logger = LoggerFactory.getLogger(javaClass)
 
     @Action
@@ -213,6 +218,32 @@ class FactionDetectorAgent(
     @AchievesGoal(description = "Faction analysis with split prediction narrative complete")
     @Action
     fun generateNarrative(windowed: WindowedScores, context: OperationContext): SplitPredictionResult {
+        if (windowed.edges.size < MIN_EDGES) {
+            val msg = buildString {
+                appendLine("## Insufficient data: ${windowed.repo}")
+                appendLine()
+                appendLine("Found ${windowed.edges.size} review edges in the window " +
+                    "${windowed.since.toString().take(10)} → ${windowed.until?.toString()?.take(10) ?: "now"} " +
+                    "(minimum: $MIN_EDGES).")
+                appendLine()
+                appendLine("Possible causes:")
+                appendLine("  • Repo uses email or external review tooling (Gerrit, Phabricator) rather than GitHub PR reviews")
+                appendLine("  • Date range predates the repo's migration to GitHub PR-based review")
+                appendLine("  • Repo has very low PR volume in this window")
+                appendLine("  • Wrong repo slug — check owner/repo spelling")
+            }
+            return SplitPredictionResult(
+                SplitPrediction(
+                    repo = windowed.repo,
+                    windowedScores = emptyList(),
+                    inflectionPointAt = null,
+                    predictedSplitDate = null,
+                    confidence = 0.0,
+                    narrative = msg,
+                )
+            )
+        }
+
         var scores = windowed.scores
         var allEdges = windowed.edges
         var backfilled = false
