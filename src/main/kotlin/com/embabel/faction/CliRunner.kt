@@ -18,6 +18,8 @@ package com.embabel.faction
 import org.springframework.boot.ApplicationArguments
 import org.springframework.boot.ApplicationRunner
 import org.springframework.core.annotation.Order
+import org.springframework.shell.Input
+import org.springframework.shell.InputProvider
 import org.springframework.shell.Shell
 import org.springframework.stereotype.Component
 import kotlin.system.exitProcess
@@ -26,8 +28,9 @@ import kotlin.system.exitProcess
  * Enables one-shot CLI usage alongside the default interactive shell.
  *
  * If any non-option arguments are present (e.g. `analyse --repo foo/bar --since 2020-01-01`),
- * they are joined into a single shell command string, evaluated, and the process exits.
- * With no non-option arguments the interactive Spring Shell starts as normal.
+<<<<<<< HEAD
+ * they are joined into a single shell command string, evaluated via [Shell.run], and the
+ * process exits. With no non-option arguments the interactive Spring Shell starts as normal.
  *
  * Usage:
  *   ./faction analyse --repo nodejs/node --since 2018-06-01 --until 2020-01-01
@@ -38,7 +41,15 @@ class CliRunner(private val shell: Shell) : ApplicationRunner {
     override fun run(args: ApplicationArguments) {
         val cmd = args.nonOptionArgs.joinToString(" ").trim()
         if (cmd.isNotEmpty()) {
-            shell.evaluate { cmd }
+            var consumed = false
+            shell.run(InputProvider {
+                if (!consumed) {
+                    consumed = true
+                    Input { cmd }
+                } else {
+                    null
+                }
+            })
             exitProcess(0)
         }
     }
