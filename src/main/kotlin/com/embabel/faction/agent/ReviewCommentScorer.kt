@@ -27,10 +27,23 @@ import com.embabel.faction.domain.ScoredPair
 import com.embabel.faction.domain.Sentiment
 import com.embabel.faction.github.GitHubClient
 import com.embabel.faction.github.GitHubReviewComment
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
+import java.nio.file.Path
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import kotlin.io.path.createDirectories
+import kotlin.io.path.exists
+import kotlin.io.path.readText
+import kotlin.io.path.writeText
+
+/** Increment when the comment classification prompt or schema changes — invalidates cached scores. */
+private const val COMMENT_SCORE_CACHE_VERSION = 1
+
+private val commentCacheMapper: ObjectMapper = jacksonObjectMapper()
 
 /**
  * LLM-powered stage-2 scorer for flagged reviewer→author pairs.
@@ -41,6 +54,9 @@ import java.util.concurrent.Executors
  *
  * A high concentration of NITPICKY + NON_BLOCKING comments in a CHANGES_REQUESTED review
  * is a strong faction fingerprint — the reviewer is blocking work with trivial feedback.
+ *
+ * Results are cached to `~/.faction-cache/{owner}_{repo}_comment_{id}_v{VERSION}.json`.
+ * Increment [COMMENT_SCORE_CACHE_VERSION] when the prompt or schema changes.
  */
 @Component
 class ReviewCommentScorer(
@@ -48,6 +64,7 @@ class ReviewCommentScorer(
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val llmPool = Executors.newFixedThreadPool(4)
+    private val cacheDir: Path = Path.of(System.getProperty("user.home"), ".faction-cache")
 
     /**
      * Score the top anomalous pairs using LLM analysis of their review comments.
@@ -64,7 +81,7 @@ class ReviewCommentScorer(
             logger.info("Stage-2 scoring pair {}→{}", pair.reviewer, pair.author)
             val comments = collectCommentsForPair(owner, repo, pair.reviewer, pair.author, recentPrNumbers)
             val scored = comments
-                .map { comment -> llmPool.submit(Callable { scoreComment(comment, context) }) }
+                .map { comment -> llmPool.submit(Callable { scoreComment(owner, repo, comment, context) }) }
                 .map { it.get() }
             ScoredPair(
                 reviewer = pair.reviewer,
@@ -87,7 +104,19 @@ class ReviewCommentScorer(
             .filter { it.user.login == reviewer }
             .take(20)  // cap per pair to bound LLM cost
 
-    private fun scoreComment(comment: GitHubReviewComment, context: OperationContext): ScoredComment {
+    private fun scoreComment(owner: String, repo: String, comment: GitHubReviewComment, context: OperationContext): ScoredComment {
+        val cacheFile = cacheDir.resolve("${owner}_${repo}_comment_${comment.id}_v${COMMENT_SCORE_CACHE_VERSION}.json")
+        if (cacheFile.exists()) {
+            logger.debug("LLM cache hit for comment {} ({}/{})", comment.id, owner, repo)
+            val cached = commentCacheMapper.readValue<CommentScoreResult>(cacheFile.readText())
+            return ScoredComment(
+                body = comment.body,
+                diffHunk = comment.diffHunk,
+                significance = cached.significance,
+                blocking = cached.blocking,
+                sentiment = Sentiment.of(cached.sentiment),
+            )
+        }
         val result = context.ai().withLlm(LlmOptions.withModel(AnthropicModels.CLAUDE_HAIKU_4_5)).create<CommentScoreResult>(
             """
             You are evaluating a GitHub pull request review comment to determine if it represents
@@ -121,6 +150,8 @@ class ReviewCommentScorer(
             ```
             """.trimIndent()
         )
+        cacheDir.createDirectories()
+        cacheFile.writeText(commentCacheMapper.writeValueAsString(result))
         return ScoredComment(
             body = comment.body,
             diffHunk = comment.diffHunk,

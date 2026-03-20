@@ -69,6 +69,15 @@ import java.time.Instant
  *   (holidays, summer lulls) — NOT genuine resolutions. Fixed by gating hadBriefResolution on
  *   edgeCount >= minResolutionWindowEdges. Terraform fixtures mark known sparse windows with
  *   sparse() helper (edgeCount=2); real runs will populate edgeCount from actual edge data.
+ * - minClusterSize=3: cluster must span at least 3 consecutive windows before any non-STABLE
+ *   classification is returned. Prevents isolated 1-2 window noisy spikes in small reviewer pools
+ *   from triggering false positives.
+ * - minFractureClusterSize=9: FRACTURE_OCCURRED requires a 9-window sustained cluster, calibrated
+ *   to the smallest confirmed corpus fracture (nodejs io.js = 9 windows). Cases shorter than 9
+ *   consecutive weeks of high asymmetry demote to GOVERNANCE_CRISIS. Events like terraform 2019
+ *   (HashiCorp restructuring, no fork) and babel 2020 (brief internal crisis, healed within weeks)
+ *   correctly land in GOVERNANCE_CRISIS rather than FRACTURE_OCCURRED under this threshold.
+ *   All current FRACTURE_OCCURRED corpus cases have clusters well above 9 windows.
  */
 class FractureDetectorCorpusTest {
 

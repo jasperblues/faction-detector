@@ -35,7 +35,13 @@ import java.time.Instant
 @Component
 class FractureDetector(private val weights: DetectorWeights = DetectorWeights()) {
 
-    fun detect(scores: List<WindowedScore>, exodus: ExodusDetection? = null): FractureDetection {
+    /**
+     * [factionSignal] is the maximum [ScoredPair.factionSignal] across all LLM-scored pairs
+     * in the analysis window. When non-null and [DetectorWeights.minOccurredFactionSignal] > 0,
+     * the adversarial comment signal must clear the threshold before FRACTURE_OCCURRED is returned;
+     * otherwise the result demotes to GOVERNANCE_CRISIS. Null = gate bypassed (backward compat).
+     */
+    fun detect(scores: List<WindowedScore>, exodus: ExodusDetection? = null, factionSignal: Double? = null): FractureDetection {
         if (scores.isEmpty()) return stable(Instant.now(), 0.0, 0)
 
         val peakWindow = scores.maxByOrNull { it.asymmetryRatio }!!
@@ -45,6 +51,12 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
         }
 
         val cluster = findPeakCluster(scores, peakWindow)
+
+        // Cluster too small: isolated spike in a small reviewer pool, not sustained tension.
+        if (cluster.size < weights.minClusterSize) {
+            return stable(peakWindow.windowStart, peakWindow.asymmetryRatio, peakWindow.connectedComponents)
+        }
+
         val peakDate = clusterCentroid(cluster)
 
         val clusterStartIdx = scores.indexOf(cluster.first())
@@ -100,14 +112,35 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
         val isRising = scores.size >= 2 &&
                 scores.takeLast(weights.recentWindowCount).zipWithNext { a, b -> b.asymmetryRatio - a.asymmetryRatio }.sum() > 0.0
 
-        val pattern = when {
+        // Faction signal gate: when signal data is available and threshold is configured, the
+        // adversarial comment evidence must clear the bar to confirm FRACTURE_OCCURRED.
+        // Gate disabled (threshold=0) or no data (null) → treat as confirmed (backward compat).
+        val hasFactionSignal = weights.minOccurredFactionSignal <= 0.0
+            || factionSignal == null
+            || factionSignal >= weights.minOccurredFactionSignal
+
+        val rawPattern = when {
             // Unresolved: severity determines IMMINENT vs LIKELY
             !isResolved && peakWindow.asymmetryRatio >= weights.imminentThreshold -> TensionPattern.FRACTURE_IMMINENT
             !isResolved -> TensionPattern.FRACTURE_LIKELY
-            isResolved && isSharpRise -> TensionPattern.FRACTURE_OCCURRED
+            // Resolved sharp rise: FRACTURE_OCCURRED if adversarial signal confirms it,
+            // otherwise GOVERNANCE_CRISIS (structural disruption without fork-level evidence).
+            isResolved && isSharpRise && hasFactionSignal -> TensionPattern.FRACTURE_OCCURRED
+            isResolved && isSharpRise -> TensionPattern.GOVERNANCE_CRISIS
             isResolved && exodus != null && isAttrition(exodus) -> TensionPattern.ATTRITION
             isResolved -> TensionPattern.EXODUS
             else -> TensionPattern.STABLE
+        }
+        // FRACTURE_OCCURRED requires a long sustained cluster (minFractureClusterSize ≈ 9 weeks)
+        // calibrated to the smallest confirmed corpus fracture (io.js). Shorter clusters demote
+        // to GOVERNANCE_CRISIS if still long enough (minOccurredClusterSize), else STABLE.
+        val pattern = when {
+            rawPattern == TensionPattern.FRACTURE_OCCURRED && cluster.size < weights.minFractureClusterSize ->
+                if (cluster.size >= weights.minOccurredClusterSize) TensionPattern.GOVERNANCE_CRISIS
+                else TensionPattern.STABLE
+            rawPattern == TensionPattern.GOVERNANCE_CRISIS && cluster.size < weights.minOccurredClusterSize ->
+                TensionPattern.STABLE
+            else -> rawPattern
         }
 
         val severity = when {
@@ -125,7 +158,8 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
 
         val fractureDate = when {
             exodusAfterPeak -> exodus!!.inferredDate
-            isResolved || pattern == TensionPattern.FRACTURE_OCCURRED -> afterCluster.firstOrNull()?.windowStart
+            isResolved || pattern == TensionPattern.FRACTURE_OCCURRED
+                    || pattern == TensionPattern.GOVERNANCE_CRISIS -> afterCluster.firstOrNull()?.windowStart
             else -> null
         }
 
@@ -192,10 +226,11 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
      * Returns the pattern this result nearly was, when the decisive threshold was within
      * [DetectorWeights.borderlineMargin] of the crossing point. Null = clear-cut classification.
      *
-     * Checks three boundaries in priority order:
+     * Checks boundaries in priority order:
      * 1. ATTRITION ↔ EXODUS — driven by attritionCoreThreshold / attritionDropThreshold
-     * 2. FRACTURE_OCCURRED ↔ EXODUS — driven by sharpRiseDelta (when baseline exists)
-     * 3. FRACTURE_IMMINENT ↔ FRACTURE_LIKELY — driven by imminentThreshold
+     * 2. FRACTURE_OCCURRED ↔ GOVERNANCE_CRISIS — driven by sharpRiseDelta (when baseline exists)
+     * 3. GOVERNANCE_CRISIS ↔ EXODUS — driven by sharpRiseDelta
+     * 4. FRACTURE_IMMINENT ↔ FRACTURE_LIKELY — driven by imminentThreshold
      */
     private fun computeAlternativePattern(
         pattern: TensionPattern,
@@ -218,15 +253,25 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
                         exodus.dropFraction < weights.attritionDropThreshold &&
                         isNear(exodus.departureCentralityFraction, weights.attritionCoreThreshold, m) ->
                     TensionPattern.ATTRITION
-                // Nearly FRACTURE_OCCURRED: isSharpRise delta was just below sharpRiseDelta
+                // Nearly GOVERNANCE_CRISIS: isSharpRise delta was just below sharpRiseDelta
+                hasBaseline && isNear(peakAsymmetry - preClusterMean, weights.sharpRiseDelta, m) ->
+                    TensionPattern.GOVERNANCE_CRISIS
+                else -> null
+            }
+
+            TensionPattern.GOVERNANCE_CRISIS -> when {
+                // Nearly FRACTURE_OCCURRED: delta was just above sharpRiseDelta
                 hasBaseline && isNear(peakAsymmetry - preClusterMean, weights.sharpRiseDelta, m) ->
                     TensionPattern.FRACTURE_OCCURRED
+                // Nearly EXODUS: delta was just below sharpRiseDelta
+                hasBaseline && isNear(peakAsymmetry - preClusterMean, weights.sharpRiseDelta, m) ->
+                    TensionPattern.EXODUS
                 else -> null
             }
 
             TensionPattern.FRACTURE_OCCURRED ->
                 if (hasBaseline && isNear(peakAsymmetry - preClusterMean, weights.sharpRiseDelta, m))
-                    TensionPattern.EXODUS else null
+                    TensionPattern.GOVERNANCE_CRISIS else null
 
             TensionPattern.FRACTURE_IMMINENT ->
                 if (isNear(peakAsymmetry, weights.imminentThreshold, m)) TensionPattern.FRACTURE_LIKELY else null

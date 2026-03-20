@@ -111,8 +111,15 @@ enum class TensionPattern {
     FRACTURE_LIKELY,
     /** Severe unresolved tension (peak > 0.7) — structural fracture appears imminent. */
     FRACTURE_IMMINENT,
-    /** Sharp spike followed by a brief resolution dip, possibly re-escalating afterward —
-     *  a fracture event occurred within the window (fork or mass departure). */
+    /** Sharp asymmetry spike that resolved, but without confirmed adversarial comment signal or
+     *  a long enough sustained cluster to confirm a fork-level event. May represent an
+     *  organisational restructuring, corporate withdrawal, or brief internal crisis that healed.
+     *  Actionable but less certain than FRACTURE_OCCURRED. */
+    GOVERNANCE_CRISIS,
+    /** Sharp spike followed by resolution — a confirmed fracture event (fork or coordinated
+     *  mass departure). Requires both a sustained cluster (>= [DetectorWeights.minFractureClusterSize]
+     *  weeks) AND adversarial comment signal above [DetectorWeights.minOccurredFactionSignal]
+     *  when faction signal data is available. The strongest claim the detector makes. */
     FRACTURE_OCCURRED,
     /** Gradual sustained elevation that resolved — coordinated faction-driven departure. */
     EXODUS,
@@ -204,6 +211,25 @@ data class DetectorWeights(
      *  brief resolution. Windows below this are likely low-activity periods (holidays, lulls)
      *  rather than real resolutions. Default 5 — sparse enough to include small active projects. */
     val minResolutionWindowEdges: Int = 5,
+    /** Minimum number of consecutive windows that must form the peak cluster before any
+     *  non-STABLE classification is returned. Prevents isolated noisy spikes in small reviewer
+     *  pools from triggering false classifications. Default 3 ≈ 3 weeks of elevated asymmetry. */
+    val minClusterSize: Int = 3,
+    /** Minimum consecutive above-threshold windows to classify as GOVERNANCE_CRISIS.
+     *  A shorter cluster demotes to STABLE. Must be >= minClusterSize. Default 5. */
+    val minOccurredClusterSize: Int = 5,
+    /** Minimum consecutive above-threshold windows to classify as FRACTURE_OCCURRED.
+     *  Cases below this threshold demote to GOVERNANCE_CRISIS. Calibrated to the smallest
+     *  confirmed corpus fracture (nodejs io.js = 9 windows). Cases shorter than 9 weeks of
+     *  sustained tension are more likely restructuring or brief crises than fork-level events.
+     *  Must be >= minOccurredClusterSize. Default 9. */
+    val minFractureClusterSize: Int = 9,
+    /** Faction signal threshold for FRACTURE_OCCURRED. When faction signal data is available
+     *  (non-null) and this is > 0, at least one scored pair must exceed this value for the
+     *  adversarial comment signal to confirm a fracture. 0.0 = gate disabled (default, backward
+     *  compatible). The live pipeline sets this to ~0.35 to require observed nitpicky/hostile
+     *  review behaviour on top of the structural asymmetry. */
+    val minOccurredFactionSignal: Double = 0.0,
     /** Only check this many afterCluster windows for a brief resolution dip. A dip months after
      *  the cluster ends (e.g. redis: first sub-0.40 dip is 5 months post-cluster) is a lull in
      *  sustained tension, not a brief post-fracture calm. Default 12 ≈ 3 months of 7-day steps.

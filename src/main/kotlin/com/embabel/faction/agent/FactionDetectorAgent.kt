@@ -173,11 +173,31 @@ class FactionDetectorAgent(
         /** Minimum review edges for a meaningful analysis. Below this the graph is too sparse
          *  for asymmetry or community detection to be reliable. */
         private const val MIN_EDGES = 20
+        // 9-window cluster + ~4 pre-baseline + ~3 post-resolution = 16 windows minimum.
+        // 120 days ≈ 17 rolling weeks — enough room for a full FRACTURE_OCCURRED to form.
+        /** Minimum rolling windows for a meaningful fracture detection pass.
+         *  FRACTURE_OCCURRED needs minFractureClusterSize(9) + ~4 pre-baseline + minPostWindows(3) = 16.
+         *  We require 16 (≈120 days) so there is enough context around a full fracture cluster. */
+        private const val MIN_WINDOWS = 16
+        /** Minimum date-range span in days. Checked before any GitHub API call.
+         *  120 days ≈ 17 rolling weeks — enough room for a 9-window fracture cluster plus
+         *  pre-baseline and post-resolution context. */
+        private const val MIN_WINDOW_DAYS = 120L
     }
     private val logger = LoggerFactory.getLogger(javaClass)
 
     @Action
-    fun parseRequest(userInput: UserInput): AnalysisRequest = parseAnalysisInput(userInput.content)
+    fun parseRequest(userInput: UserInput): AnalysisRequest {
+        val req = parseAnalysisInput(userInput.content)
+        val spanDays = ChronoUnit.DAYS.between(req.since, req.until ?: Instant.now())
+        require(spanDays >= MIN_WINDOW_DAYS) {
+            "Date range too short: ${spanDays} days (minimum ${MIN_WINDOW_DAYS}). " +
+            "With 7-day rolling windows that gives only ~${spanDays / 7} windows; " +
+            "reliable fracture detection needs at least $MIN_WINDOWS. " +
+            "Try: --since ${req.since.minus(MIN_WINDOW_DAYS - spanDays, ChronoUnit.DAYS).toString().take(10)}"
+        }
+        return req
+    }
 
     @Action
     fun fetchAndPersist(request: AnalysisRequest): FetchResult {
@@ -230,20 +250,24 @@ class FactionDetectorAgent(
     @AchievesGoal(description = "Faction analysis with split prediction narrative complete")
     @Action
     fun generateNarrative(windowed: WindowedScores, context: OperationContext): SplitPredictionResult {
-        if (windowed.edges.size < MIN_EDGES) {
-            val msg = buildString {
-                appendLine("## Insufficient data: ${windowed.repo}")
-                appendLine()
-                appendLine("Found ${windowed.edges.size} review edges in the window " +
-                    "${windowed.since.toString().take(10)} → ${windowed.until?.toString()?.take(10) ?: "now"} " +
-                    "(minimum: $MIN_EDGES).")
-                appendLine()
-                appendLine("Possible causes:")
-                appendLine("  • Repo uses email or external review tooling (Gerrit, Phabricator) rather than GitHub PR reviews")
-                appendLine("  • Date range predates the repo's migration to GitHub PR-based review")
-                appendLine("  • Repo has very low PR volume in this window")
-                appendLine("  • Wrong repo slug — check owner/repo spelling")
-            }
+        val insufficientDataReason: String? = when {
+            windowed.edges.size < MIN_EDGES ->
+                "Found ${windowed.edges.size} review edges (minimum: $MIN_EDGES).\n" +
+                "Possible causes:\n" +
+                "  • Repo uses email or external review tooling (Gerrit, Phabricator) rather than GitHub PR reviews\n" +
+                "  • Date range predates the repo's migration to GitHub PR-based review\n" +
+                "  • Repo has very low PR volume in this window\n" +
+                "  • Wrong repo slug — check owner/repo spelling"
+            windowed.scores.size < MIN_WINDOWS ->
+                "Got only ${windowed.scores.size} rolling windows (minimum: $MIN_WINDOWS).\n" +
+                "The repo had too few review events in this period for reliable fracture detection.\n" +
+                "Try extending the date range or choosing a more active window."
+            else -> null
+        }
+        if (insufficientDataReason != null) {
+            val msg = "## Insufficient data: ${windowed.repo}\n\n" +
+                "Window: ${windowed.since.toString().take(10)} → ${windowed.until?.toString()?.take(10) ?: "now"}\n\n" +
+                insufficientDataReason
             return SplitPredictionResult(
                 SplitPrediction(
                     repo = windowed.repo,
@@ -261,7 +285,8 @@ class FactionDetectorAgent(
         var backfilled = false
 
         var exodus = exodusDetector.detect(allEdges, windowed.until)
-        var fracture = fractureDetector.detect(scores, exodus)
+        val maxFactionSignal = windowed.scoredPairs.map { it.factionSignal }.maxOrNull()
+        var fracture = fractureDetector.detect(scores, exodus, maxFactionSignal)
 
         // Backfill: if we classified EXODUS with a confirmed departure but the window opens
         // mid-tension (first 8 windows already elevated), fetch 6 months prior to find the
@@ -282,7 +307,7 @@ class FactionDetectorAgent(
                 allEdges = backfillEdges + allEdges
                 scores = asymmetryScorer.score(allEdges, backfillSince, until = windowed.until)
                 exodus = exodusDetector.detect(allEdges, windowed.until)
-                fracture = fractureDetector.detect(scores, exodus)
+                fracture = fractureDetector.detect(scores, exodus, maxFactionSignal)
                 backfilled = true
             }
         }
@@ -564,6 +589,12 @@ class FactionDetectorAgent(
                 // natural churn is a faction event. Floor at 0.30 so the signal isn't dismissed.
                 val departureFraction = exodus?.dropFraction ?: 0.0
                 (0.30 + departureFraction * 0.5).coerceIn(0.30, 0.65)
+            }
+            TensionPattern.GOVERNANCE_CRISIS -> {
+                // Structural disruption confirmed but no fork-level evidence. Confidence reflects
+                // that something real happened but the outcome is ambiguous — cap below FRACTURE_OCCURRED.
+                val exodusBonus = (exodus?.dropFraction ?: 0.0) * 0.15
+                (fracture.peakAsymmetry * 0.55 + exodusBonus + 0.05).coerceIn(0.0, 0.80)
             }
             TensionPattern.STABLE ->
                 base.coerceIn(0.0, 1.0)

@@ -26,11 +26,14 @@ Built with [Embabel](https://github.com/embabel/embabel-agent) + Spring Boot + N
 
 | Pattern | Description |
 |---------|-------------|
-| `FRACTURE_OCCURRED` | Sharp asymmetry spike followed by resolution — fork or mass departure happened |
+| `FRACTURE_OCCURRED` | Confirmed fork or coordinated adversarial departure: 9+ weeks of sustained high asymmetry AND adversarial comment signal. The strongest claim the tool makes. |
+| `GOVERNANCE_CRISIS` | Real structural disruption visible in the review graph — organisational restructuring, corporate withdrawal, or brief crisis — but without fork-level evidence. |
 | `FRACTURE_IMMINENT` | Peak is current and unresolved — split may be imminent |
-| `EXODUS` | Gradual sustained elevation that resolved — coordinated departure without fork |
+| `EXODUS` | Gradual sustained elevation that resolved — coordinated departure without adversarial spike |
 | `ATTRITION` | Natural contributor lifecycle turnover — succession problem, not faction problem |
 | `STABLE` | No significant asymmetry detected |
+
+> **Minimum data requirement:** 4 months (120 days) of PR review history. A confirmed fork pattern (`FRACTURE_OCCURRED`) requires 9 consecutive weeks of elevated asymmetry plus pre- and post-cluster context — roughly 16 rolling windows.
 
 ---
 

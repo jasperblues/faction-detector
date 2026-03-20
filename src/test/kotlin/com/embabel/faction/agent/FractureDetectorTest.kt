@@ -54,15 +54,16 @@ class FractureDetectorTest {
     }
 
     @Test
-    fun `sharp spike in past with drop after returns FRACTURE`() {
-        // Low baseline → sharp spike → drop → resolved
+    fun `sharp spike in past with drop after returns GOVERNANCE_CRISIS`() {
+        // Low baseline → sharp spike (5 windows — below minFractureClusterSize=9) → drop → resolved.
+        // Short cluster and no faction signal → GOVERNANCE_CRISIS, not FRACTURE_OCCURRED.
         val scores = listOf(
             score(0.2, 30), score(0.25, 28), score(0.2, 26),  // quiet baseline
-            score(0.8, 20), score(0.9, 18), score(1.0, 16), score(0.85, 14),  // spike
+            score(0.75, 22), score(0.8, 20), score(0.9, 18), score(1.0, 16), score(0.85, 14),  // spike (5 windows)
             score(0.3, 8), score(0.2, 6), score(0.15, 4), score(0.1, 2),     // resolved
         )
         val result = detector.detect(scores)
-        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionPattern.GOVERNANCE_CRISIS, result.pattern)
         assertEquals(TensionSeverity.EXTREME, result.severity)
         assertTrue(result.isResolved)
         assertNotNull(result.fractureDate)
@@ -96,28 +97,46 @@ class FractureDetectorTest {
 
     @Test
     fun `rising recent windows sets isRising true`() {
+        // Cluster must be >= minClusterSize (3) for the pattern path to run and set isRising.
         val scores = listOf(
-            score(0.3, 12), score(0.4, 8), score(0.6, 4), score(0.75, 1),
+            score(0.2, 16), score(0.3, 12), score(0.5, 8), score(0.6, 4), score(0.75, 1),
         )
         val result = detector.detect(scores)
         assertTrue(result.isRising)
     }
 
     @Test
-    fun `nodejs-like pattern scores EXTREME FRACTURE`() {
-        // Peak at 1.0 in weeks 16-20 ago (Nov-Dec 2014 equivalent), resolved by weeks 4-8 ago
+    fun `nodejs-like pattern scores EXTREME GOVERNANCE_CRISIS without faction signal`() {
+        // 6-window cluster — below minFractureClusterSize=9 and no faction signal provided.
+        // Real fracture requires 9+ sustained weeks; this grades as GOVERNANCE_CRISIS.
         val scores = listOf(
             score(0.6, 24), score(0.75, 22), score(0.9, 20),
-            score(1.0, 18), score(0.95, 16),                              // peak cluster
-            score(0.55, 10), score(0.45, 8), score(0.35, 6),             // drop
-            score(0.25, 4), score(0.2, 2),                                // resolved
+            score(1.0, 18), score(0.95, 16), score(0.55, 14),            // 6-window cluster
+            score(0.45, 8), score(0.35, 6),                              // drop
+            score(0.25, 4), score(0.2, 2),                               // resolved
         )
         val result = detector.detect(scores)
-        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionPattern.GOVERNANCE_CRISIS, result.pattern)
         assertEquals(TensionSeverity.EXTREME, result.severity)
         assertTrue(result.isResolved)
         assertEquals(1.0, result.peakAsymmetry)
         assertNotNull(result.peakDate)
+    }
+
+    @Test
+    fun `9-window cluster with faction signal gives FRACTURE_OCCURRED`() {
+        // 9 consecutive elevated windows (floor for FRACTURE_OCCURRED) + faction signal provided.
+        val scores = listOf(
+            score(0.2, 36), score(0.25, 34),                             // baseline
+            score(0.6, 28), score(0.75, 26), score(0.9, 24),
+            score(1.0, 22), score(0.95, 20), score(0.85, 18),
+            score(0.75, 16), score(0.7, 14), score(0.6, 12),            // 9-window cluster
+            score(0.3, 6), score(0.2, 4), score(0.15, 2),               // resolved
+        )
+        val result = detector.detect(scores, factionSignal = 0.55)
+        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionSeverity.EXTREME, result.severity)
+        assertTrue(result.isResolved)
     }
 
     @Test

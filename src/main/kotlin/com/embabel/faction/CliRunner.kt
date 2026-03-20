@@ -27,20 +27,21 @@ import kotlin.system.exitProcess
 /**
  * Enables one-shot CLI usage alongside the default interactive shell.
  *
- * If any non-option arguments are present (e.g. `analyse --repo foo/bar --since 2020-01-01`),
-<<<<<<< HEAD
- * they are joined into a single shell command string, evaluated via [Shell.run], and the
- * process exits. With no non-option arguments the interactive Spring Shell starts as normal.
+ * The command is passed via the `-Dfaction.command` system property by the `faction`
+ * wrapper script, which avoids Spring Boot's argument parser splitting `--repo`,
+ * `--since` etc. into option keys and bare values.
  *
- * Usage:
+ * With no `faction.command` property set, the interactive Spring Shell starts normally.
+ *
+ * Usage (via wrapper script):
  *   ./faction analyse --repo nodejs/node --since 2018-06-01 --until 2020-01-01
  */
 @Component
 @Order(Int.MIN_VALUE)
 class CliRunner(private val shell: Shell) : ApplicationRunner {
     override fun run(args: ApplicationArguments) {
-        val cmd = args.nonOptionArgs.joinToString(" ").trim()
-        if (cmd.isNotEmpty()) {
+        val cmd = System.getProperty("faction.command")?.trim()
+        if (!cmd.isNullOrEmpty()) {
             var consumed = false
             shell.run(InputProvider {
                 if (!consumed) {
