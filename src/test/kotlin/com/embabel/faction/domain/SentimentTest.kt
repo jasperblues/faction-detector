@@ -51,8 +51,8 @@ class SentimentTest {
             sentiment = Sentiment.NEUTRAL,
         )
         val pair = ScoredPair("alice", "bob", 1.0, listOf(comment))
-        // 100% nitpicky * 0.6 + 0 hostile sentiment * 0.4 = 0.6
-        assertEquals(0.6, pair.factionSignal, 0.001)
+        // 100% nitpicky * 0.5 + 0 hostile sentiment * 0.5 = 0.5
+        assertEquals(0.5, pair.factionSignal, 0.001)
     }
 
     @Test

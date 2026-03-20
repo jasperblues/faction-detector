@@ -85,6 +85,10 @@ data class FactionAnalysis(
 
 /**
  * Asymmetry score for a single rolling window — used for trend analysis.
+ *
+ * [edgeCount] is the number of core-contributor edges in the window after filtering.
+ * Low edge counts indicate low-activity periods (holidays, summer lulls) that can
+ * produce spurious asymmetry dips — used to gate brief-resolution detection in FractureDetector.
  */
 data class WindowedScore(
     val windowStart: Instant,
@@ -92,6 +96,7 @@ data class WindowedScore(
     val asymmetryRatio: Double,
     val connectedComponents: Int,
     val modularity: Double,
+    val edgeCount: Int = 0,
 )
 
 enum class TensionPattern {
@@ -167,6 +172,40 @@ data class ExodusDetection(
     val dropFraction: Double,
     val totalProjectCentrality: Double,
     val departureCentralityFraction: Double,
+)
+
+/**
+ * Tunable thresholds for fracture detection.
+ * Externalised so tests can vary weights without recompiling.
+ */
+data class DetectorWeights(
+    /** Asymmetry must exceed this to be considered a tension event. */
+    val tensionThreshold: Double = 0.5,
+    /** Number of trailing windows considered "current". */
+    val recentWindowCount: Int = 4,
+    /** Post-cluster mean must drop below this fraction of peak to count as resolved. */
+    val resolutionRatio: Double = 0.6,
+    /** Minimum post-cluster windows needed to confirm resolution. */
+    val minPostWindows: Int = 3,
+    /** Peak must exceed pre-cluster mean by at least this delta to count as a sharp rise. */
+    val sharpRiseDelta: Double = 0.4,
+    /** A single post-cluster window below this level confirms a brief resolution (multi-wave). */
+    val briefResolutionThreshold: Double = 0.4,
+    /** Peak below this level → FRACTURE_LIKELY rather than FRACTURE_IMMINENT. */
+    val imminentThreshold: Double = 0.70,
+    /** ATTRITION: core impact below this fraction is consistent with natural turnover. */
+    val attritionCoreThreshold: Double = 0.12,
+    /** ATTRITION: active-window mass drop below this fraction rules out coordinated departure. */
+    val attritionDropThreshold: Double = 0.33,
+    /** Minimum edges in a post-cluster window for its asymmetry dip to count as a genuine
+     *  brief resolution. Windows below this are likely low-activity periods (holidays, lulls)
+     *  rather than real resolutions. Default 5 — sparse enough to include small active projects. */
+    val minResolutionWindowEdges: Int = 5,
+    /** Only check this many afterCluster windows for a brief resolution dip. A dip months after
+     *  the cluster ends (e.g. redis: first sub-0.40 dip is 5 months post-cluster) is a lull in
+     *  sustained tension, not a brief post-fracture calm. Default 12 ≈ 3 months of 7-day steps.
+     *  The nodejs io.js brief calm appeared in the 2nd afterCluster window — well within this. */
+    val briefResolutionWindowSize: Int = 12,
 )
 
 /**

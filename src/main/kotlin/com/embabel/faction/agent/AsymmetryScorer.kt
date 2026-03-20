@@ -91,6 +91,7 @@ class AsymmetryScorer {
             asymmetryRatio = asymmetryRatio,
             connectedComponents = communities,
             modularity = modularity,
+            edgeCount = edges.size,
         )
     }
 
