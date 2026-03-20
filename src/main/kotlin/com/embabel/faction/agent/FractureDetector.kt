@@ -54,6 +54,15 @@ class FractureDetector {
          *  Future: make this adaptive based on community centrality concentration. */
         private const val SHARP_RISE_DELTA = 0.4
 
+        /** A single post-cluster window below this level is strong evidence the fracture
+         *  briefly resolved — even if tension re-escalated afterward (multi-wave pattern).
+         *  Used to detect FRACTURE_OCCURRED in windows that contain both an event and its aftermath. */
+        private const val BRIEF_RESOLUTION_THRESHOLD = 0.4
+
+        /** Peak below this level → FRACTURE_LIKELY rather than FRACTURE_IMMINENT.
+         *  Reserves IMMINENT for clearly severe sustained tension. */
+        private const val IMMINENT_THRESHOLD = 0.70
+
         /** ATTRITION: core impact below this fraction is consistent with natural turnover.
          *  At 12%, departure is a succession problem, not a faction problem. */
         private const val ATTRITION_CORE_THRESHOLD = 0.12
@@ -91,19 +100,22 @@ class FractureDetector {
         // Exodus after the peak counts as resolution — the departure was the fracture event.
         // When exodus is near the end of the analysis window, asymmetryDropped may not fire
         // (not enough settled post-cluster data), so we keep exodusAfterPeak as an OR.
-        val isResolved = asymmetryDropped || exodusAfterPeak
-        // Re-escalation: exodus resolved the original tension, but post-exodus windows show
-        // renewed high asymmetry — the graph didn't heal, a new crisis is forming.
-        // We look only at windows starting on or after the exodus date to avoid conflating
-        // re-escalation with the run-up to the exodus itself (which is also high asymmetry).
-        // Requires at least 2 post-exodus windows — if exodus is at the end of the window
-        // there's no data to confirm re-escalation.
-        val isReEscalating = isResolved && exodusAfterPeak && exodus != null && run {
-            val postExodusWindows = scores
-                .filter { !it.windowStart.isBefore(exodus.inferredDate) }
-                .takeLast(RECENT_WINDOW_COUNT)
-            postExodusWindows.size >= 2 &&
-                postExodusWindows.map { it.asymmetryRatio }.average() >= TENSION_THRESHOLD
+        // Multi-wave: a single post-cluster window well below tension threshold (< 0.4) is
+        // strong evidence the first fracture event briefly resolved, even if tension re-escalated
+        // afterward (e.g. nodejs io.js fork Dec 2014, brief calm Jan 2015, then Foundation
+        // negotiations brought renewed tension). We treat this as FRACTURE_OCCURRED + re-escalation
+        // rather than FRACTURE_IMMINENT, which would hide that a fork already happened.
+        val hadBriefResolution = afterCluster.any { it.asymmetryRatio < BRIEF_RESOLUTION_THRESHOLD }
+        val isResolved = asymmetryDropped || exodusAfterPeak || hadBriefResolution
+        // Re-escalation: tension resolved (via any path) but trailing windows are still elevated.
+        val trailingMean = scores.takeLast(RECENT_WINDOW_COUNT).map { it.asymmetryRatio }.average()
+        val isReEscalating = isResolved && trailingMean >= TENSION_THRESHOLD && run {
+            // Exodus-based: exclude the re-escalation from the run-up to the exodus itself.
+            val postEventWindows = if (exodusAfterPeak && exodus != null)
+                scores.filter { !it.windowStart.isBefore(exodus.inferredDate) }.takeLast(RECENT_WINDOW_COUNT)
+            else
+                scores.takeLast(RECENT_WINDOW_COUNT)
+            postEventWindows.size >= 2 && postEventWindows.map { it.asymmetryRatio }.average() >= TENSION_THRESHOLD
         }
         // Sharp rise: peak exceeds pre-cluster mean by SHARP_RISE_DELTA, regardless of absolute level.
         // Handles commercially-contested projects (Redis, Terraform) where structural asymmetry
@@ -119,8 +131,9 @@ class FractureDetector {
                 scores.takeLast(4).zipWithNext { a, b -> b.asymmetryRatio - a.asymmetryRatio }.sum() > 0.0
 
         val pattern = when {
-            peakIsRecent && !isResolved -> TensionPattern.FRACTURE_IMMINENT
-            !peakIsRecent && !isResolved -> TensionPattern.FRACTURE_IMMINENT // sustained unresolved = still active
+            // Unresolved: severity determines IMMINENT vs LIKELY
+            !isResolved && peakWindow.asymmetryRatio >= IMMINENT_THRESHOLD -> TensionPattern.FRACTURE_IMMINENT
+            !isResolved -> TensionPattern.FRACTURE_LIKELY
             isResolved && isSharpRise -> TensionPattern.FRACTURE_OCCURRED
             isResolved && exodus != null && isAttrition(exodus) -> TensionPattern.ATTRITION
             isResolved -> TensionPattern.EXODUS

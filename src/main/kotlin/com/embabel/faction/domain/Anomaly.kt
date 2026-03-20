@@ -104,9 +104,10 @@ data class ScoredComment(
  * A flagged reviewer→author pair with LLM-scored comments.
  *
  * [factionSignal] blends two signals equally:
- * - Weighted nitpicky fraction: NITPICKY of any kind counts once; NITPICKY+BLOCKING counts
- *   double because it is active obstruction (blocking a merge with trivial feedback) rather
- *   than mere noise. Normalised against comment count so score stays in [0, 1].
+ * - Nitpicky fraction: NITPICKY comments regardless of blocking status. NITPICKY+BLOCKING
+ *   is self-moderating in practice — reviewers know it's easy to challenge, so faction
+ *   behaviour shows up as NITPICKY+CHANGES_REQUESTED framed as NON_BLOCKING. Counting
+ *   NITPICKY alone (normalised by comment count) is the stronger signal.
  * - Sentiment signal: blend of worst-case hostile comment (max hostile outlier) and average
  *   sentiment. Average alone hides a single deeply hostile comment among neutral ones;
  *   worst-case alone is too sensitive to one-off tone. 50/50 blend balances both.
@@ -122,13 +123,8 @@ data class ScoredPair(
 ) {
     val factionSignal: Double get() {
         if (scoredComments.isEmpty()) return 0.0
-        val nitpickyAny = scoredComments.count { it.significance == CommentSignificance.NITPICKY }
-        val nitpickyBlocking = scoredComments.count {
-            it.significance == CommentSignificance.NITPICKY && it.blocking == BlockingNature.BLOCKING
-        }
-        // NITPICKY+BLOCKING counts double — active obstruction, not just noise.
-        // Divide by 2*size to keep the range [0, 1].
-        val nitpickySignal = (nitpickyAny + nitpickyBlocking).toDouble() / (2 * scoredComments.size)
+        val nitpickyCount = scoredComments.count { it.significance == CommentSignificance.NITPICKY }
+        val nitpickySignal = nitpickyCount.toDouble() / scoredComments.size
         val sentiments = scoredComments.map { it.sentiment.value }
         val avgSentiment = sentiments.average()
         val worstSentiment = sentiments.min()

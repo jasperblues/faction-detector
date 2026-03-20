@@ -41,18 +41,23 @@ class ExodusDetector {
         private const val STEP_DAYS = 7L
         private const val DROP_THRESHOLD = 0.25       // 25% weighted mass loss = step-change
         private const val MIN_STABLE_WINDOWS = 3      // windows on each side to confirm step
-        private const val MIN_CENTRALITY = 5.0        // ignore drive-by contributors
+        private const val MIN_CENTRALITY = 3.0        // ignore drive-by contributors
     }
 
     /**
      * Returns an [ExodusDetection] if a coordinated departure is found, null otherwise.
+     *
+     * [windowUntil] should be passed as the analysis window's `until` bound so that
+     * post-departure silence is measured up to the intended cutoff, not just to the
+     * last edge timestamp. Without this, the contamination fix (filtering edges to the
+     * window) would eliminate the post-departure slack that confirms the step-change.
      */
-    fun detect(edges: List<ReviewEdge>): ExodusDetection? {
+    fun detect(edges: List<ReviewEdge>, windowUntil: Instant? = null): ExodusDetection? {
         if (edges.isEmpty()) return null
 
         val centrality = computeCentrality(edges)
         val since = edges.minOf { it.timestamp }
-        val until = edges.maxOf { it.timestamp }
+        val until = windowUntil ?: edges.maxOf { it.timestamp }
 
         val windows = buildWindows(edges, since, until, centrality)
         if (windows.size < MIN_STABLE_WINDOWS * 2 + 1) return null

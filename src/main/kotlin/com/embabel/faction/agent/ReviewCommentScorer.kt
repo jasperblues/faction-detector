@@ -29,6 +29,8 @@ import com.embabel.faction.github.GitHubClient
 import com.embabel.faction.github.GitHubReviewComment
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 
 /**
  * LLM-powered stage-2 scorer for flagged reviewer→author pairs.
@@ -45,6 +47,7 @@ class ReviewCommentScorer(
     private val gitHubClient: GitHubClient,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val llmPool = Executors.newFixedThreadPool(4)
 
     /**
      * Score the top anomalous pairs using LLM analysis of their review comments.
@@ -60,7 +63,9 @@ class ReviewCommentScorer(
         return flaggedPairs.map { pair ->
             logger.info("Stage-2 scoring pair {}→{}", pair.reviewer, pair.author)
             val comments = collectCommentsForPair(owner, repo, pair.reviewer, pair.author, recentPrNumbers)
-            val scored = comments.map { scoreComment(it, context) }
+            val scored = comments
+                .map { comment -> llmPool.submit(Callable { scoreComment(comment, context) }) }
+                .map { it.get() }
             ScoredPair(
                 reviewer = pair.reviewer,
                 author = pair.author,

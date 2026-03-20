@@ -17,6 +17,7 @@ package com.embabel.faction.agent
 
 import com.embabel.faction.domain.ReviewEdge
 import com.embabel.faction.domain.WindowedScore
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -35,6 +36,8 @@ import java.time.temporal.ChronoUnit
 @Component
 class AsymmetryScorer {
 
+    private val logger = LoggerFactory.getLogger(javaClass)
+
     fun score(
         edges: List<ReviewEdge>,
         since: Instant,
@@ -45,6 +48,7 @@ class AsymmetryScorer {
     ): List<WindowedScore> {
         if (edges.isEmpty()) return emptyList()
 
+        logger.info("Scoring asymmetry over {} edges ({} → {})", edges.size, since.toString().take(10), (until ?: Instant.now()).toString().take(10))
         val ceiling = until ?: Instant.now()
         val results = mutableListOf<WindowedScore>()
         var windowStart = since
@@ -58,6 +62,7 @@ class AsymmetryScorer {
             }
             windowStart = windowStart.plus(stepDays, ChronoUnit.DAYS)
         }
+        logger.info("Asymmetry scoring complete — {} windows", results.size)
         return results
     }
 

@@ -104,7 +104,7 @@ data class SplitPredictionResult(
             rows += "Confidence" to "${"%.0f".format(prediction.confidence * 100)}%"
             rows += "Peak tension" to "${f.peakDate.toString().take(10)} (asymmetry ${"%.2f".format(f.peakAsymmetry)})"
             rows += "Status" to when {
-                f.isReEscalating -> "RESOLVED — POST-EXODUS RE-ESCALATION"
+                f.isReEscalating -> "RESOLVED — RE-ESCALATION DETECTED"
                 f.pattern == TensionPattern.ATTRITION -> "RESOLVED — NATURAL ATTRITION"
                 f.isResolved -> "RESOLVED"
                 f.isRising -> "UNRESOLVED — RISING"
@@ -248,7 +248,7 @@ class FactionDetectorAgent(
         var allEdges = windowed.edges
         var backfilled = false
 
-        var exodus = exodusDetector.detect(allEdges)
+        var exodus = exodusDetector.detect(allEdges, windowed.until)
         var fracture = fractureDetector.detect(scores, exodus)
 
         // Backfill: if we classified EXODUS with a confirmed departure but the window opens
@@ -269,7 +269,7 @@ class FactionDetectorAgent(
                 logger.info("Backfill complete: {} edges, re-running fracture detection", backfillEdges.size)
                 allEdges = backfillEdges + allEdges
                 scores = asymmetryScorer.score(allEdges, backfillSince, until = windowed.until)
-                exodus = exodusDetector.detect(allEdges)
+                exodus = exodusDetector.detect(allEdges, windowed.until)
                 fracture = fractureDetector.detect(scores, exodus)
                 backfilled = true
             }
@@ -347,17 +347,55 @@ class FactionDetectorAgent(
                 "  ${p.reviewer}→${p.author}: factionSignal=${"%.2f".format(p.factionSignal)}, anomaly=${"%.2f".format(p.anomalyScore)}$tag"
             }
 
+        // Top communities by centrality — large repos have hundreds of micro-communities;
+        // only the high-power ones matter for faction analysis.
+        val topCommunities = windowed.communityAssignments.entries
+            .groupBy { it.value }
+            .mapValues { (_, members) -> members.sumOf { centrality[it.key] ?: 0.0 } }
+            .entries.sortedByDescending { it.value }
+            .take(5)
+            .map { it.key }
+            .toSet()
         val communityBreakdown = windowed.communityAssignments.entries
             .groupBy { it.value }
-            .entries.sortedBy { it.key }
+            .entries
+            .filter { (id, _) -> id in topCommunities }
+            .sortedByDescending { (id, members) -> members.sumOf { centrality[it.key] ?: 0.0 } }
             .joinToString("\n") { (id, members) ->
-                "  Community $id: ${members.map { it.key }.sorted().joinToString(", ")}"
+                val power = members.sumOf { centrality[it.key] ?: 0.0 }.toInt()
+                "  Community $id (power=$power): ${members.map { it.key }.sortedByDescending { centrality[it] ?: 0.0 }.take(10).joinToString(", ")}"
             }
+
+        // Bridge figures: appear in top faction-signal pairs AND cross community boundaries.
+        // High faction signal on a bridge figure is partly centrality artefact — they're
+        // absorbing heat from both sides, not necessarily originating it.
+        val bridgeFigures = windowed.scoredPairs
+            .filter { p ->
+                val reviewerCommunity = windowed.communityAssignments[p.reviewer]
+                val authorCommunity = windowed.communityAssignments[p.author]
+                reviewerCommunity != null && authorCommunity != null &&
+                    reviewerCommunity != authorCommunity
+            }
+            .flatMap { listOf(it.reviewer, it.author) }
+            .groupingBy { it }
+            .eachCount()
+            .filter { it.value >= 2 }
+            .keys
+
+        // Modularity change rate: week-on-week delta highlights structural phase transitions
+        // (e.g. rust October 2020) better than absolute level, which varies by repo size.
+        val modularityDeltas = scores.zipWithNext { a, b -> b.modularity - a.modularity }
+        val maxModularitySpike = modularityDeltas.maxOrNull() ?: 0.0
+        val maxModularitySpikeAt = if (modularityDeltas.isNotEmpty())
+            scores[modularityDeltas.indexOf(maxModularitySpike) + 1].windowStart.toString().take(10)
+        else null
 
         val fractureContext = buildString {
             appendLine("Fracture detection:")
-            appendLine("  Pattern: ${fracture.pattern} | Severity: ${fracture.severity}")
+            appendLine("  Pattern: ${fracture.pattern}")
             appendLine("  Peak tension: week of ${fracture.peakDate.toString().take(10)} (asymmetry: ${"%.2f".format(fracture.peakAsymmetry)})")
+            if (maxModularitySpike > 0.05 && maxModularitySpikeAt != null)
+                appendLine("  Modularity spike: +${"%.2f".format(maxModularitySpike)} at $maxModularitySpikeAt (community structure crystallising — may indicate organisational shock)")
             if (fracture.isResolved) {
                 fracture.fractureDate?.let { appendLine("  Fracture event: ~${it.toString().take(10)} (drop followed peak)") }
                 fracture.resolutionDate?.let { appendLine("  Resolution: ${it.toString().take(10)} (asymmetry returned to baseline)") }
@@ -410,16 +448,25 @@ class FactionDetectorAgent(
             Rolling asymmetry scores (higher = more faction divergence):
             ${scores.joinToString("\n") { "  ${it.windowStart.toString().take(10)}: asymmetry=${it.asymmetryRatio}" }}
 
-            ${if (communityBreakdown.isNotBlank()) "GDS Louvain community structure (anomaly-weighted):\n$communityBreakdown" else ""}
+            ${if (communityBreakdown.isNotBlank()) "GDS Louvain top communities by centrality (anomaly-weighted):\n$communityBreakdown" else ""}
 
-            ${if (pairSummary.isNotBlank()) "Top reviewer→author pairs by faction signal (NITPICKY+NON_BLOCKING rate):\n$pairSummary" else ""}
+            ${if (bridgeFigures.isNotEmpty()) "Bridge figures (cross-community connectors — high faction signal may be centrality artefact, not adversarial behaviour): ${bridgeFigures.joinToString(", ")}" else ""}
+
+            ${if (pairSummary.isNotBlank()) "Top reviewer→author pairs by faction signal (NITPICKY rate):\n$pairSummary" else ""}
 
             Write a concise 2-3 paragraph analysis:
-            1. ${if (fracture.pattern == TensionPattern.ATTRITION) "Who left and why — frame as natural contributor lifecycle, not faction conflict. Reference specific contributors and their likely motivations." else "What factions formed and why — or what is currently building — referencing specific contributors and community groupings"}
+            1. ${when (fracture.pattern) {
+                TensionPattern.ATTRITION -> "Who left and why — frame as natural contributor lifecycle, not faction conflict. Reference specific contributors and their likely motivations."
+                TensionPattern.FRACTURE_LIKELY -> "What early warning signals are present — which contributor groupings are showing divergence and why. Frame this as a preventable escalation, not a foregone conclusion."
+                else -> "What factions formed and why — or what is currently building — referencing specific contributors and community groupings"
+            }}
             2. Risk level consistent with the fracture pattern AND the confidence score above
-            3. ${when (fracture.pattern) {
-                TensionPattern.ATTRITION -> "Concrete succession planning and knowledge transfer recommendations. Do NOT suggest governance intervention or frame this as a political conflict."
-                else -> if (fracture.isResolved) "What this historical event tells us about the project's trajectory" else "Recommendations for maintainers to de-escalate"
+            3. ${when {
+                fracture.pattern == TensionPattern.ATTRITION -> "Concrete succession planning and knowledge transfer recommendations. Do NOT suggest governance intervention or frame this as a political conflict."
+                fracture.pattern == TensionPattern.FRACTURE_LIKELY -> "Concrete early interventions for maintainers — what governance or process changes could prevent this from escalating to a full fracture."
+                fracture.isReEscalating -> "A fracture event occurred within this window followed by renewed tension — describe both the original event and what is driving the re-escalation."
+                fracture.isResolved -> "What this historical event tells us about the project's trajectory and what resolved it."
+                else -> "Recommendations for maintainers to de-escalate"
             }}
             """.trimIndent()
         )
@@ -453,8 +500,15 @@ class FactionDetectorAgent(
         val communitySignal = exodus?.dropFraction ?: crossCommunityScore
         val base = fracture.peakAsymmetry * 0.5 + communitySignal * 0.3 + avgFactionSignal * 0.2
         return when (fracture.pattern) {
-            TensionPattern.FRACTURE_OCCURRED ->
-                (base + 0.15).coerceIn(0.0, 1.0)
+            TensionPattern.FRACTURE_OCCURRED -> {
+                // Fracture confirmed — evidence clarity drives confidence, not whether exodus
+                // was captured in the analysis window (may fall just outside it).
+                // Governance fractures (e.g. io.js) show low faction signal because teams are
+                // technically aligned; penalising for that gives low confidence on clear true positives.
+                // Peak asymmetry is the primary evidence; exodus scale adds corroboration.
+                val exodusBonus = (exodus?.dropFraction ?: 0.0) * 0.20
+                (fracture.peakAsymmetry * 0.65 + exodusBonus + 0.10).coerceIn(0.0, 1.0)
+            }
             TensionPattern.EXODUS -> {
                 // Large projects always have contributors leaving for normal reasons (new jobs, burnout).
                 // What distinguishes a faction exodus from routine churn is whether the departure
@@ -470,16 +524,27 @@ class FactionDetectorAgent(
                 else 1.0
                 ((base + 0.10) * structuralFactor).coerceIn(0.0, 1.0)
             }
+            TensionPattern.FRACTURE_LIKELY -> {
+                // Moderate unresolved tension — same shape as IMMINENT but lower weight.
+                // No corroboration bonus; rising is still meaningful.
+                val risingBonus = if (fracture.isRising) 0.05 else 0.0
+                val raw = fracture.peakAsymmetry * 0.35 + factionFormationScore * 0.20 +
+                    avgFactionSignal * 0.15 + risingBonus
+                val modularityFactor = (peakModularity / 0.20).coerceIn(0.0, 1.0)
+                (raw * modularityFactor).coerceIn(0.0, 1.0)
+            }
             TensionPattern.FRACTURE_IMMINENT -> {
                 val risingBonus = if (fracture.isRising) 0.10 else 0.0
                 val corroborationBonus = if (fracture.peakAsymmetry >= 0.8 && factionFormationScore >= 0.3) 0.10 else 0.0
-                val raw = fracture.peakAsymmetry * 0.40 + factionFormationScore * 0.25 +
-                    avgFactionSignal * 0.15 + risingBonus + corroborationBonus
-                // Gate on modularity: low modularity = Louvain found no meaningful community
-                // structure — likely hub-and-spoke topology, not genuine faction formation.
-                // Normalize against 0.20 (observed peak in confirmed fracture events).
-                val modularityFactor = (peakModularity / 0.20).coerceIn(0.0, 1.0)
-                (raw * modularityFactor).coerceIn(0.0, 1.0)
+                // Modularity as additive bonus (max +0.15), not a gate multiplier.
+                // Hub-and-spoke projects (e.g. Rust compiler) have structurally low Louvain
+                // modularity even under genuine tension — multiplying by it crushed true positives.
+                // Extreme sustained asymmetry is itself strong evidence; modularity/faction signals
+                // add conviction but are not required.
+                val modularityBonus = (peakModularity / 0.20).coerceIn(0.0, 1.0) * 0.15
+                val raw = fracture.peakAsymmetry * 0.50 + factionFormationScore * 0.20 +
+                    avgFactionSignal * 0.10 + risingBonus + corroborationBonus + modularityBonus
+                raw.coerceIn(0.0, 1.0)
             }
             TensionPattern.ATTRITION -> {
                 // Natural turnover: confidence reflects departure scale (succession planning urgency),

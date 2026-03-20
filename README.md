@@ -128,6 +128,16 @@ mvn test
 
 ---
 
+## Next Steps
+
+- **Threshold optimisation via labeled corpus**: Replace manual threshold tuning with a data-science approach. Build a ground-truth corpus of `(repo, since, until, expected_pattern)` cases from known historical fractures (Node.js io.js fork, Rust Mozilla layoffs, Terraform BSL, etc.), extract all detector thresholds into a `DetectorWeights` data class, and grid-search for the weight combination that maximises classification accuracy across the corpus. This makes regression testing explicit and removes the guesswork from threshold changes.
+
+- **Structural vs adversarial asymmetry**: Post-merger integration (e.g. Node.js June 2015–March 2016) produces elevated asymmetry that looks like FRACTURE_IMMINENT but reflects healthy specialisation. Explore additional signals (modularity trend, cross-community review rate) to distinguish structural from adversarial divergence.
+
+- **Multi-repo support**: Accept a list of repos and produce a comparative report.
+
+---
+
 ## Contributors
 
 [![Faction Detector contributors](https://contrib.rocks/image?repo=embabel/faction-detector)](https://github.com/embabel/faction-detector/graphs/contributors)

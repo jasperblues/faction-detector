@@ -48,16 +48,6 @@ data class GitHubPr(
 data class GitHubUser(val login: String)
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class GitHubReview(
-    val user: GitHubUser,
-    val state: String,
-    @JsonProperty("submitted_at") val submittedAt: String,
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class GitHubComment(val id: Long)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
 data class GitHubIssueComment(
     val id: Long,
     val user: GitHubUser,
@@ -74,6 +64,9 @@ data class GitHubReviewComment(
     @JsonProperty("pull_request_review_id") val reviewId: Long?,
     @JsonProperty("created_at") val createdAt: String? = null,
 )
+
+/** Increment when the edge schema or filtering logic changes — invalidates all prior edge caches. */
+internal const val EDGE_CACHE_VERSION = 2
 
 /**
  * Removes any edges whose timestamp falls outside [since, until).
@@ -109,8 +102,8 @@ class GitHubClient(private val properties: GitHubProperties) {
         .build()
 
     /**
-     * Crawl all PR review edges for a repo since the given timestamp.
-     * Returns one ReviewEdge per review event.
+     * Crawl all PR comment edges for a repo within the given time window.
+     * Returns one ReviewEdge per unique commenter per PR.
      */
     fun fetchReviewEdges(owner: String, repo: String, since: Instant, until: Instant? = null): List<ReviewEdge> {
         val cacheFile = cacheFile(owner, repo, since, until)
@@ -120,16 +113,14 @@ class GitHubClient(private val properties: GitHubProperties) {
                 .filter { it.reviewer.isHumanContributor() && it.author.isHumanContributor() }
         }
 
-        logger.info("Crawling PRs for {}/{} since {} until {} (mode: {})", owner, repo, since, until ?: "now", properties.edgeSource)
+        logger.info("Crawling PRs for {}/{} since {} until {}", owner, repo, since, until ?: "now")
         val prs = fetchAllPrs(owner, repo, since, until)
         logger.info("Found {} merged PRs", prs.size)
 
-        val reviewEdges = if (properties.edgeSource != EdgeSource.COMMENTS) buildReviewEdges(owner, repo, prs, until) else emptyList()
-        val commentEdges = if (properties.edgeSource != EdgeSource.REVIEWS) buildCommentEdges(owner, repo, prs, reviewEdges, until) else emptyList()
-        val total = reviewEdges + commentEdges
-        logger.info("Built {} edges ({} review, {} comment) from {} PRs", total.size, reviewEdges.size, commentEdges.size, prs.size)
+        val edges = buildCommentEdges(owner, repo, prs, until)
+        logger.info("Built {} edges from {} PRs", edges.size, prs.size)
 
-        val bounded = total.filterEdgesByWindow(since, until)
+        val bounded = edges.filterEdgesByWindow(since, until)
         if (bounded.isNotEmpty()) {
             cacheDir.createDirectories()
             cacheFile.writeText(cacheMapper.writeValueAsString(bounded))
@@ -141,7 +132,7 @@ class GitHubClient(private val properties: GitHubProperties) {
     }
 
     private fun cacheFile(owner: String, repo: String, since: Instant, until: Instant?): Path {
-        val key = "${owner}_${repo}_${since.epochSecond}_${until?.epochSecond ?: "now"}.json"
+        val key = "${owner}_${repo}_${since.epochSecond}_${until?.epochSecond ?: "now"}_v${EDGE_CACHE_VERSION}.json"
         return cacheDir.resolve(key)
     }
 
@@ -150,58 +141,20 @@ class GitHubClient(private val properties: GitHubProperties) {
         && !this.endsWith("-bot")
         && !this.contains("-bot-")
 
-    private fun buildReviewEdges(owner: String, repo: String, prs: List<GitHubPr>, until: Instant? = null): List<ReviewEdge> {
-        return prs.flatMapIndexed { idx, pr ->
-            if (idx % 50 == 0) logger.info("Fetching reviews for PR {}/{} (PR #{})", idx + 1, prs.size, pr.number)
-            val reviews = fetchReviews(owner, repo, pr.number)
-            val commentCount = fetchCommentCount(owner, repo, pr.number)
-            val prCreated = Instant.parse(pr.createdAt)
-            val prMerged = pr.mergedAt?.let { Instant.parse(it) }
-
-            reviews.mapNotNull { review ->
-                if (review.user.login == pr.user.login) return@mapNotNull null
-                if (!review.user.login.isHumanContributor()) return@mapNotNull null
-                val reviewedAt = Instant.parse(review.submittedAt)
-                if (until != null && reviewedAt.isAfter(until)) return@mapNotNull null
-                val hoursToFirstReview = java.time.Duration.between(prCreated, reviewedAt).toHours().toDouble()
-                val daysMerged = prMerged?.let {
-                    java.time.Duration.between(reviewedAt, it).toDays().toDouble()
-                }
-                ReviewEdge(
-                    reviewer = review.user.login,
-                    author = pr.user.login,
-                    repo = "$owner/$repo",
-                    prNumber = pr.number,
-                    timestamp = reviewedAt,
-                    commentCount = commentCount,
-                    state = parseState(review.state),
-                    hoursToFirstReview = hoursToFirstReview,
-                    daysMergedAfterReview = daysMerged,
-                )
-            }
-        }
-    }
-
     /**
-     * Builds edges from inline PR comments, used when formal review events are absent.
-     * One edge per unique commenter per PR. In [EdgeSource.BOTH] mode, only adds edges
-     * where no review edge already exists for that reviewer+PR combination.
+     * Builds edges from inline PR comments. One edge per unique commenter per PR.
+     * Merges inline diff comments and general issue thread comments.
      */
     private fun buildCommentEdges(
         owner: String,
         repo: String,
         prs: List<GitHubPr>,
-        existingEdges: List<ReviewEdge>,
         until: Instant? = null,
     ): List<ReviewEdge> {
-        val reviewedPrsByReviewer = existingEdges.groupBy { it.reviewer }.mapValues { (_, edges) ->
-            edges.mapNotNull { it.prNumber }.toSet()
-        }
         return prs.flatMapIndexed { idx, pr ->
             if (idx % 50 == 0) logger.info("Fetching comments for PR {}/{} (PR #{})", idx + 1, prs.size, pr.number)
             val prCreated = Instant.parse(pr.createdAt)
             val prMerged = pr.mergedAt?.let { Instant.parse(it) }
-            // Merge inline diff comments + general issue thread comments
             val allCommenters: Map<String, List<Instant>> = buildMap {
                 fetchReviewComments(owner, repo, pr.number)
                     .filter { it.user.login != pr.user.login && it.user.login.isHumanContributor() }
@@ -218,28 +171,25 @@ class GitHubClient(private val properties: GitHubProperties) {
                             .filter { until == null || it.isBefore(until) }) { a, b -> a + b }
                     }
             }
-            allCommenters
-                .mapNotNull { (commenter, timestamps) ->
-                    if (timestamps.isEmpty()) return@mapNotNull null
-                    // In BOTH mode, skip if a formal review edge already covers this reviewer+PR
-                    if (reviewedPrsByReviewer[commenter]?.contains(pr.number) == true) return@mapNotNull null
-                    val firstCommentAt = timestamps.minOrNull() ?: prCreated
-                    val hoursToFirst = java.time.Duration.between(prCreated, firstCommentAt).toHours().toDouble()
-                    val daysMerged = prMerged?.let {
-                        java.time.Duration.between(firstCommentAt, it).toDays().toDouble()
-                    }
-                    ReviewEdge(
-                        reviewer = commenter,
-                        author = pr.user.login,
-                        repo = "$owner/$repo",
-                        prNumber = pr.number,
-                        timestamp = firstCommentAt,
-                        commentCount = timestamps.size,
-                        state = ReviewState.COMMENTED,
-                        hoursToFirstReview = hoursToFirst,
-                        daysMergedAfterReview = daysMerged,
-                    )
+            allCommenters.mapNotNull { (commenter, timestamps) ->
+                if (timestamps.isEmpty()) return@mapNotNull null
+                val firstCommentAt = timestamps.minOrNull() ?: prCreated
+                val hoursToFirst = java.time.Duration.between(prCreated, firstCommentAt).toHours().toDouble()
+                val daysMerged = prMerged?.let {
+                    java.time.Duration.between(firstCommentAt, it).toDays().toDouble()
                 }
+                ReviewEdge(
+                    reviewer = commenter,
+                    author = pr.user.login,
+                    repo = "$owner/$repo",
+                    prNumber = pr.number,
+                    timestamp = firstCommentAt,
+                    commentCount = timestamps.size,
+                    state = ReviewState.COMMENTED,
+                    hoursToFirstReview = hoursToFirst,
+                    daysMergedAfterReview = daysMerged,
+                )
+            }
         }
     }
 
@@ -329,12 +279,6 @@ class GitHubClient(private val properties: GitHubProperties) {
         prPageCacheFile(owner, repo, page).writeText(cacheMapper.writeValueAsString(prs))
     }
 
-    private fun fetchReviews(owner: String, repo: String, prNumber: Int): List<GitHubReview> =
-        getWithRateLimitHandling<List<GitHubReview>>("/repos/$owner/$repo/pulls/$prNumber/reviews") ?: emptyList()
-
-    private fun fetchCommentCount(owner: String, repo: String, prNumber: Int): Int =
-        getWithRateLimitHandling<List<GitHubComment>>("/repos/$owner/$repo/pulls/$prNumber/comments")?.size ?: 0
-
     /**
      * Fetch full review comment bodies and diff hunks for a PR.
      * Used in the stage-2 LLM scoring pass for flagged reviewer→author pairs.
@@ -353,8 +297,18 @@ class GitHubClient(private val properties: GitHubProperties) {
         return result
     }
 
-    private fun fetchIssueComments(owner: String, repo: String, prNumber: Int): List<GitHubIssueComment> =
-        getWithRateLimitHandling<List<GitHubIssueComment>>("/repos/$owner/$repo/issues/$prNumber/comments") ?: emptyList()
+    private fun fetchIssueComments(owner: String, repo: String, prNumber: Int): List<GitHubIssueComment> {
+        val cacheFile = cacheDir.resolve("${owner}_${repo}_pr${prNumber}_issue_comments.json")
+        if (cacheFile.exists()) {
+            return cacheMapper.readValue(cacheFile.readText())
+        }
+        val result = getWithRateLimitHandling<List<GitHubIssueComment>>(
+            "/repos/$owner/$repo/issues/$prNumber/comments"
+        ) ?: return emptyList()
+        cacheDir.createDirectories()
+        cacheFile.writeText(cacheMapper.writeValueAsString(result))
+        return result
+    }
 
     private inline fun <reified T> getWithRateLimitHandling(url: String): T? {
         repeat(3) { attempt ->
@@ -366,9 +320,10 @@ class GitHubClient(private val properties: GitHubProperties) {
                         logger.warn("Rate limited, backing off {}ms (attempt {})", properties.rateLimitBackoffMs, attempt + 1)
                         Thread.sleep(properties.rateLimitBackoffMs)
                     }
-                    e.message?.contains("RST_STREAM") == true || e.message?.contains("I/O error") == true -> {
+                    e.message?.contains("RST_STREAM") == true || e.message?.contains("I/O error") == true
+                        || e.message?.contains("502") == true || e.message?.contains("503") == true -> {
                         val backoff = 2_000L * (attempt + 1)
-                        logger.warn("Transient I/O error (attempt {}), retrying in {}ms: {}", attempt + 1, backoff, e.message)
+                        logger.warn("Transient error (attempt {}), retrying in {}ms: {}", attempt + 1, backoff, e.message)
                         Thread.sleep(backoff)
                     }
                     // Deserialization failures (GitHub returned an error object instead of a list)
@@ -387,9 +342,4 @@ class GitHubClient(private val properties: GitHubProperties) {
         return null
     }
 
-    private fun parseState(raw: String): ReviewState = when (raw.uppercase()) {
-        "APPROVED" -> ReviewState.APPROVED
-        "CHANGES_REQUESTED" -> ReviewState.CHANGES_REQUESTED
-        else -> ReviewState.COMMENTED
-    }
 }

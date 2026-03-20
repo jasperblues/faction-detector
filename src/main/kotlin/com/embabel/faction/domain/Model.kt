@@ -101,9 +101,13 @@ enum class TensionPattern {
      *  Asymmetry rises as coverage thins but there is no adversarial review signal.
      *  Call to action: succession planning and knowledge transfer, not governance intervention. */
     ATTRITION,
-    /** Tension is current and unresolved — split may be imminent. */
+    /** Moderate unresolved tension (peak 0.5–0.7) — early warning signal, not yet critical.
+     *  Worth monitoring; governance intervention may prevent escalation. */
+    FRACTURE_LIKELY,
+    /** Severe unresolved tension (peak > 0.7) — structural fracture appears imminent. */
     FRACTURE_IMMINENT,
-    /** Sharp spike in the past followed by resolution — likely a fork or mass departure. */
+    /** Sharp spike followed by a brief resolution dip, possibly re-escalating afterward —
+     *  a fracture event occurred within the window (fork or mass departure). */
     FRACTURE_OCCURRED,
     /** Gradual sustained elevation that resolved — coordinated faction-driven departure. */
     EXODUS,
