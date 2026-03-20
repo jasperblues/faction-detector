@@ -100,6 +100,7 @@ data class SplitPredictionResult(
         if (f != null) {
             val rows = mutableListOf<Pair<String, String>>()
             rows += "Pattern" to f.pattern.name
+            f.alternativePattern?.let { rows += "Nearly" to it.name }
             rows += "Severity" to f.severity.name
             rows += "Confidence" to "${"%.0f".format(prediction.confidence * 100)}%"
             rows += "Peak tension" to "${f.peakDate.toString().take(10)} (asymmetry ${"%.2f".format(f.peakAsymmetry)})"
@@ -392,7 +393,7 @@ class FactionDetectorAgent(
 
         val fractureContext = buildString {
             appendLine("Fracture detection:")
-            appendLine("  Pattern: ${fracture.pattern}")
+            appendLine("  Pattern: ${fracture.pattern}${fracture.alternativePattern?.let { " (borderline — nearly $it)" } ?: ""}")
             appendLine("  Peak tension: week of ${fracture.peakDate.toString().take(10)} (asymmetry: ${"%.2f".format(fracture.peakAsymmetry)})")
             if (maxModularitySpike > 0.05 && maxModularitySpikeAt != null)
                 appendLine("  Modularity spike: +${"%.2f".format(maxModularitySpike)} at $maxModularitySpikeAt (community structure crystallising — may indicate organisational shock)")

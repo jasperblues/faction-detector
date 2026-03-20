@@ -20,6 +20,7 @@ import com.embabel.faction.domain.ExodusDetection
 import com.embabel.faction.domain.TensionPattern
 import com.embabel.faction.domain.WindowedScore
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import java.time.Instant
 
@@ -50,10 +51,17 @@ import java.time.Instant
  * | babel/babel | 2018-01-01 → 2020-06-01 | EXODUS | Babel 7 release crunch Aug–Oct 2018; gradual resolution Dec 2018 |
  * | redis/redis | 2021-01-01 → 2023-12-01 | FRACTURE_IMMINENT | pre-Valkey tension; rising at window end |
  * | redis/redis | 2021-01-01 → 2024-09-01 | FRACTURE_OCCURRED | Valkey fork March 2024, 38% mass drop |
+ * | nodejs/node | 2016-01-01 → 2017-12-01 | FRACTURE_OCCURRED | TSC exodus Oct–Nov 2017, 34% drop, 17.4% core impact |
+ * | nodejs/node | 2018-01-01 → 2019-12-01 | EXODUS | Second-wave departure Dec 2017, 14% drop, 12.9% core impact |
  *
  * ## Known weight sensitivities
  * - rust ATTRITION: departureCentralityFraction=11.7% vs attritionCoreThreshold=12% — razor thin.
  *   Lowering attritionCoreThreshold below 11.7% flips this to EXODUS.
+ * - nodejs second-wave EXODUS: departureCentralityFraction=12.9% vs attritionCoreThreshold=12% — razor thin.
+ *   Raising attritionCoreThreshold above 12.9% flips this to ATTRITION.
+ *   Both cases correctly flag alternativePattern (2.5% and 7.5% from threshold respectively).
+ * - sharpRiseDelta=0.38: redis delta=0.434 (14% above), babel delta=0.32 (16% below) — clear gap.
+ *   Was 0.40; lowered to 0.38 so redis FRACTURE_OCCURRED sits outside the 10% borderline margin.
  * - terraform: sparse contributor pool produces 0.00/low asymmetry windows during quiet periods
  *   (holidays, summer lulls) — NOT genuine resolutions. Fixed by gating hadBriefResolution on
  *   edgeCount >= minResolutionWindowEdges. Terraform fixtures mark known sparse windows with
@@ -328,7 +336,7 @@ class FractureDetectorCorpusTest {
     // contributors cycled out one by one over 2019-2020 (jridgewell being the highest-impact
     // departure in Jun 2020). This is EXODUS, not FRACTURE_OCCURRED, because:
     //   - isSharpRise = false: pre-cluster mean ~0.68 (elevated throughout H1 2018 during
-    //     Babel 7 RC work); peak 1.00 − 0.68 = 0.32 < sharpRiseDelta (0.40)
+    //     Babel 7 RC work); peak 1.00 − 0.68 = 0.32 < sharpRiseDelta (0.38)
     //   - asymmetryDropped = true: post-cluster mean well below 0.60 threshold
     //   - No exodus data passed → EXODUS (with exodus at 4.9% core impact / 27% drop → ATTRITION;
     //     score-only path validates the base classification before exodus augmentation)
@@ -898,6 +906,163 @@ class FractureDetectorCorpusTest {
         w("2022-04-19", "2022-05-19", 1.00, 0.50),
     )
 
+    // -------------------------------------------------------------------------
+    // nodejs/node  2016-01-01 → 2017-12-01 (backfilled +6mo to 2015-07-05)
+    // Ground truth: TSC contributor exodus Oct–Nov 2017 — FRACTURE_OCCURRED.
+    // Fishrock123 (James M Snell), mscdex (Brian White), trevnorris (Trevor Norris) and others
+    // resigned from the TSC citing hostile governance environment. 34% mass drop, 17.4% core
+    // impact — well above attrition thresholds. exodusAfterPeak (2017-11-06 after Oct 2016 peak)
+    // provides the resolution signal since afterCluster is empty (all post-departure windows still
+    // above tensionThreshold — community stabilised but never fully cooled).
+    // Source: nodejs/TSC meeting notes; https://github.com/nodejs/node/issues/16260
+    // -------------------------------------------------------------------------
+    private val nodejsTscExodusScores = listOf(
+        w("2015-07-05", "2015-08-04", 0.47, 0.13),
+        w("2015-07-12", "2015-08-11", 0.68, 0.13),
+        w("2015-07-19", "2015-08-18", 0.74, 0.08),
+        w("2015-07-26", "2015-08-25", 0.71, 0.08),
+        w("2015-08-02", "2015-09-01", 0.74, 0.07),
+        w("2015-08-09", "2015-09-08", 0.79, 0.05),
+        w("2015-08-16", "2015-09-15", 0.79, 0.05),
+        w("2015-08-23", "2015-09-22", 0.75, 0.06),
+        w("2015-08-30", "2015-09-29", 0.85, 0.06),
+        w("2015-09-06", "2015-10-06", 0.78, 0.05),
+        w("2015-09-13", "2015-10-13", 0.76, 0.06),
+        w("2015-09-20", "2015-10-20", 0.73, 0.07),
+        w("2015-09-27", "2015-10-27", 0.76, 0.06),
+        w("2015-10-04", "2015-11-03", 0.70, 0.06),
+        w("2015-10-11", "2015-11-10", 0.80, 0.06),
+        w("2015-10-18", "2015-11-17", 0.80, 0.06),
+        w("2015-10-25", "2015-11-24", 0.88, 0.06),
+        w("2015-11-01", "2015-12-01", 0.84, 0.06),
+        w("2015-11-08", "2015-12-08", 0.72, 0.05),
+        w("2015-11-15", "2015-12-15", 0.71, 0.06),
+        w("2015-11-22", "2015-12-22", 0.65, 0.07),
+        w("2015-11-29", "2015-12-29", 0.74, 0.08),
+        w("2015-12-06", "2016-01-05", 0.75, 0.11),
+        w("2015-12-13", "2016-01-12", 0.78, 0.10),
+        w("2015-12-20", "2016-01-19", 0.78, 0.09),
+        w("2015-12-27", "2016-01-26", 0.78, 0.07),
+        w("2016-01-03", "2016-02-02", 0.76, 0.07),
+        w("2016-01-10", "2016-02-09", 0.72, 0.05),
+        w("2016-01-17", "2016-02-16", 0.79, 0.04),
+        w("2016-01-24", "2016-02-23", 0.77, 0.05),
+        w("2016-01-31", "2016-03-01", 0.74, 0.06),
+        w("2016-02-07", "2016-03-08", 0.55, 0.06),
+        w("2016-02-14", "2016-03-15", 0.64, 0.05),
+        w("2016-02-21", "2016-03-22", 0.64, 0.05),
+        w("2016-02-28", "2016-03-29", 0.66, 0.05),
+        w("2016-03-06", "2016-04-05", 0.68, 0.05),
+        w("2016-03-13", "2016-04-12", 0.70, 0.05),
+        w("2016-03-20", "2016-04-19", 0.68, 0.04),
+        w("2016-03-27", "2016-04-26", 0.71, 0.04),
+        w("2016-04-03", "2016-05-03", 0.71, 0.04),
+        w("2016-04-10", "2016-05-10", 0.64, 0.04),
+        w("2016-04-17", "2016-05-17", 0.62, 0.04),
+        w("2016-04-24", "2016-05-24", 0.65, 0.04),
+        w("2016-05-01", "2016-05-31", 0.68, 0.04),
+        w("2016-05-08", "2016-06-07", 0.67, 0.04),
+        w("2016-05-15", "2016-06-14", 0.69, 0.04),
+        w("2016-05-22", "2016-06-21", 0.63, 0.04),
+        w("2016-05-29", "2016-06-28", 0.67, 0.04),
+        w("2016-06-05", "2016-07-05", 0.76, 0.04),
+        w("2016-06-12", "2016-07-12", 0.63, 0.05),
+        w("2016-06-19", "2016-07-19", 0.68, 0.04),
+        w("2016-06-26", "2016-07-26", 0.66, 0.04),
+        w("2016-07-03", "2016-08-02", 0.65, 0.05),
+        w("2016-07-10", "2016-08-09", 0.71, 0.05),
+        w("2016-07-17", "2016-08-16", 0.68, 0.06),
+        w("2016-07-24", "2016-08-23", 0.91, 0.06),
+        w("2016-07-31", "2016-08-30", 0.88, 0.05),
+        w("2016-08-07", "2016-09-06", 0.77, 0.05),
+        w("2016-08-14", "2016-09-13", 0.80, 0.05),
+        w("2016-08-21", "2016-09-20", 0.77, 0.06),
+        w("2016-08-28", "2016-09-27", 0.75, 0.04),
+        w("2016-09-04", "2016-10-04", 0.63, 0.05),
+        w("2016-09-11", "2016-10-11", 0.67, 0.05),
+        w("2016-09-18", "2016-10-18", 0.74, 0.04),
+        w("2016-09-25", "2016-10-25", 0.63, 0.05),
+        w("2016-10-02", "2016-11-01", 0.76, 0.05),
+        w("2016-10-09", "2016-11-08", 0.79, 0.06),
+        w("2016-10-16", "2016-11-15", 0.78, 0.06),
+        w("2016-10-23", "2016-11-22", 0.83, 0.05),
+        w("2016-10-30", "2016-11-29", 0.89, 0.09),
+        w("2016-11-06", "2016-12-06", 0.89, 0.10),
+        w("2016-11-13", "2016-12-13", 0.92, 0.09),
+        w("2016-11-20", "2016-12-20", 1.00, 0.11),
+        w("2016-11-27", "2016-12-27", 1.00, 0.09),
+        w("2016-12-04", "2017-01-03", 0.84, 0.06),
+        w("2016-12-11", "2017-01-10", 0.75, 0.05),
+        w("2016-12-18", "2017-01-17", 0.80, 0.06),
+        w("2016-12-25", "2017-01-24", 0.83, 0.04),
+        w("2017-01-01", "2017-01-31", 0.78, 0.04),
+        w("2017-01-08", "2017-02-07", 0.85, 0.04),
+        w("2017-01-15", "2017-02-14", 0.81, 0.04),
+        w("2017-01-22", "2017-02-21", 0.83, 0.04),
+        w("2017-01-29", "2017-02-28", 0.82, 0.04),
+        w("2017-02-05", "2017-03-07", 0.83, 0.05),
+        w("2017-02-12", "2017-03-14", 0.80, 0.05),
+        w("2017-02-19", "2017-03-21", 0.77, 0.05),
+        w("2017-02-26", "2017-03-28", 0.92, 0.05),
+        w("2017-03-05", "2017-04-04", 0.85, 0.07),
+        w("2017-03-12", "2017-04-11", 1.00, 0.11),
+        w("2017-03-19", "2017-04-18", 0.88, 0.04),
+        w("2017-03-26", "2017-04-25", 0.81, 0.05),
+        w("2017-04-02", "2017-05-02", 0.88, 0.04),
+        w("2017-04-09", "2017-05-09", 0.85, 0.05),
+        w("2017-04-16", "2017-05-16", 0.79, 0.04),
+        w("2017-04-23", "2017-05-23", 0.79, 0.05),
+        w("2017-04-30", "2017-05-30", 0.87, 0.05),
+        w("2017-05-07", "2017-06-06", 0.83, 0.04),
+        w("2017-05-14", "2017-06-13", 0.81, 0.04),
+        w("2017-05-21", "2017-06-20", 0.80, 0.04),
+        w("2017-05-28", "2017-06-27", 0.82, 0.04),
+        w("2017-06-04", "2017-07-04", 0.82, 0.03),
+        w("2017-06-11", "2017-07-11", 0.93, 0.04),
+        w("2017-06-18", "2017-07-18", 0.96, 0.04),
+        w("2017-06-25", "2017-07-25", 0.85, 0.05),
+        w("2017-07-02", "2017-08-01", 0.88, 0.06),
+        w("2017-07-09", "2017-08-08", 0.95, 0.06),
+        w("2017-07-16", "2017-08-15", 0.93, 0.06),
+        w("2017-07-23", "2017-08-22", 0.81, 0.08),
+        w("2017-07-30", "2017-08-29", 0.88, 0.06),
+        w("2017-08-06", "2017-09-05", 0.92, 0.07),
+        w("2017-08-13", "2017-09-12", 0.86, 0.08),
+        w("2017-08-20", "2017-09-19", 0.88, 0.08),
+        w("2017-08-27", "2017-09-26", 0.90, 0.07),
+        w("2017-09-03", "2017-10-03", 0.92, 0.08),
+        w("2017-09-10", "2017-10-10", 0.81, 0.06),
+        w("2017-09-17", "2017-10-17", 0.88, 0.06),
+        w("2017-09-24", "2017-10-24", 0.77, 0.06),
+        w("2017-10-01", "2017-10-31", 0.79, 0.05),
+        w("2017-10-08", "2017-11-07", 0.84, 0.04),
+        w("2017-10-15", "2017-11-14", 0.82, 0.04),
+        w("2017-10-22", "2017-11-21", 0.81, 0.05),
+        w("2017-10-29", "2017-11-28", 0.81, 0.06),
+        w("2017-11-05", "2017-12-05", 0.69, 0.07),
+        w("2017-11-12", "2017-12-12", 0.67, 0.09),
+        w("2017-11-19", "2017-12-19", 0.71, 0.13),
+        w("2017-11-26", "2017-12-26", 0.67, 0.25),
+    )
+
+    // TSC exodus Oct–Nov 2017: departure-driven, above attrition thresholds (17.4% core impact).
+    // Values from actual run: massBefore=5913.0, massAfter=3911.3, dropFraction=0.34, core=17.4%
+    private val nodejsTscExodus2017 = ExodusDetection(
+        inferredDate = Instant.parse("2017-11-06T00:00:00Z"),
+        departedContributors = listOf(
+            DepartedContributor("Fishrock123", 433.0, Instant.parse("2017-10-22T00:00:00Z")),
+            DepartedContributor("mscdex", 404.0, Instant.parse("2017-10-22T00:00:00Z")),
+            DepartedContributor("trevnorris", 144.0, Instant.parse("2017-10-22T00:00:00Z")),
+            DepartedContributor("mhdawson", 56.0, Instant.parse("2017-10-22T00:00:00Z")),
+            DepartedContributor("joaocgreis", 54.0, Instant.parse("2017-10-22T00:00:00Z")),
+        ),
+        weightedMassBefore = 5913.0,
+        weightedMassAfter = 3911.3,
+        dropFraction = 0.34,
+        totalProjectCentrality = 6270.0,   // departed sum (1091) / 0.174
+        departureCentralityFraction = 0.174,
+    )
+
     @Test
     fun `terraform pre-BSL tension 2021-2022 gives FRACTURE_IMMINENT`() {
         val result = detector.detect(terraformPreBslScores)
@@ -914,6 +1079,7 @@ class FractureDetectorCorpusTest {
     fun `redis Valkey fork 2021-2024 gives FRACTURE_OCCURRED`() {
         val result = detector.detect(redisFractureScores, valKeyExodus)
         assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertNull(result.alternativePattern, "Valkey fork is a clear fracture — delta 0.43 vs sharpRiseDelta 0.38 is >10% margin, should not flag nearly EXODUS")
     }
 
     // Score-only: FRACTURE_IMMINENT (extreme sustained tension, no baseline → can't confirm spike).
@@ -929,12 +1095,14 @@ class FractureDetectorCorpusTest {
     fun `nodejs io-js fork 2014-2015 gives FRACTURE_OCCURRED`() {
         val result = detector.detect(nodejsIoJsScores)
         assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertNull(result.alternativePattern)
     }
 
     @Test
     fun `rust pre-layoffs 2020 gives FRACTURE_IMMINENT`() {
         val result = detector.detect(rustImminentScores)
         assertEquals(TensionPattern.FRACTURE_IMMINENT, result.pattern)
+        assertNull(result.alternativePattern)
     }
 
     // Note: departure centrality fraction is 11.7% vs default threshold of 12% — razor thin.
@@ -944,14 +1112,189 @@ class FractureDetectorCorpusTest {
     fun `rust mozilla layoffs 2020-2021 gives ATTRITION`() {
         val result = detector.detect(rustAttritionScores, mozillaLayoffsExodus)
         assertEquals(TensionPattern.ATTRITION, result.pattern)
+        assertEquals(TensionPattern.EXODUS, result.alternativePattern, "11.7% core impact vs 12% threshold — should flag nearly EXODUS")
     }
 
-    // Score-only: isSharpRise=false (pre-cluster mean ~0.68, delta 0.32 < sharpRiseDelta 0.40)
+    // Score-only: isSharpRise=false (pre-cluster mean ~0.68, delta 0.32 < sharpRiseDelta 0.38)
     // and asymmetryDropped=true → EXODUS. With exodus data (4.9% core impact, 27% drop) this
     // would be ATTRITION — test validates the score-only base classification.
     @Test
     fun `babel post-Babel7 contributor exodus 2018-2020 gives EXODUS`() {
         val result = detector.detect(babelExodusScores)
         assertEquals(TensionPattern.EXODUS, result.pattern)
+        assertNull(result.alternativePattern)
+    }
+
+    // afterCluster is empty (all post-departure windows >= 0.50 — community stabilised but never
+    // fully cooled). exodusAfterPeak provides the resolution signal, isSharpRise=true (1.00−0.47=0.53
+    // > sharpRiseDelta). departureCentralityFraction=17.4% > attritionCoreThreshold → not attrition.
+    @Test
+    fun `nodejs TSC exodus 2017 gives FRACTURE_OCCURRED`() {
+        val result = detector.detect(nodejsTscExodusScores, nodejsTscExodus2017)
+        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+    }
+
+    // -------------------------------------------------------------------------
+    // nodejs/node  2018-01-01 → 2019-12-01 (backfilled +6mo to 2017-07-05)
+    // Ground truth: secondary departure wave Dec 2017 (refack, eugeneo, rvagg and others stepping
+    // back after Nov 2017 TSC resignations) — EXODUS. Data starts at 1.00 (no baseline), cluster
+    // breaks on the single sub-0.50 window 2018-02-14 (0.43). exodusAfterPeak (Dec 2017 after
+    // Oct 2017 centroid) → isResolved=true. 12.9% core impact just clears attritionCoreThreshold
+    // (12%) → NOT attrition. isSharpRise=false (no baseline, no afterCluster dip below 0.40).
+    // Source: Node.js TSC meeting notes; contributor GitHub activity history
+    // -------------------------------------------------------------------------
+    private val nodejsSecondWaveScores = listOf(
+        w("2017-07-05", "2017-08-04", 1.00, 0.07),
+        w("2017-07-12", "2017-08-11", 0.93, 0.06),
+        w("2017-07-19", "2017-08-18", 0.84, 0.07),
+        w("2017-07-26", "2017-08-25", 0.82, 0.07),
+        w("2017-08-02", "2017-09-01", 0.85, 0.07),
+        w("2017-08-09", "2017-09-08", 0.92, 0.07),
+        w("2017-08-16", "2017-09-15", 0.83, 0.08),
+        w("2017-08-23", "2017-09-22", 0.87, 0.08),
+        w("2017-08-30", "2017-09-29", 0.90, 0.07),
+        w("2017-09-06", "2017-10-06", 0.82, 0.08),
+        w("2017-09-13", "2017-10-13", 0.83, 0.07),
+        w("2017-09-20", "2017-10-20", 0.82, 0.06),
+        w("2017-09-27", "2017-10-27", 0.74, 0.05),
+        w("2017-10-04", "2017-11-03", 0.85, 0.04),
+        w("2017-10-11", "2017-11-10", 0.85, 0.04),
+        w("2017-10-18", "2017-11-17", 0.77, 0.04),
+        w("2017-10-25", "2017-11-24", 0.79, 0.06),
+        w("2017-11-01", "2017-12-01", 0.74, 0.06),
+        w("2017-11-08", "2017-12-08", 0.76, 0.07),
+        w("2017-11-15", "2017-12-15", 0.72, 0.07),
+        w("2017-11-22", "2017-12-22", 0.52, 0.10),
+        w("2017-11-29", "2017-12-29", 0.65, 0.08),
+        w("2017-12-06", "2018-01-05", 0.73, 0.11),
+        w("2017-12-13", "2018-01-12", 0.75, 0.14),
+        w("2017-12-20", "2018-01-19", 1.00, 0.40),
+        w("2017-12-27", "2018-01-26", 1.00, 0.33),
+        w("2018-01-03", "2018-02-02", 1.00, 0.33),
+        w("2018-01-10", "2018-02-09", 1.00, 0.20),
+        w("2018-01-17", "2018-02-16", 1.00, 0.15),
+        w("2018-01-24", "2018-02-23", 1.00, 0.09),
+        w("2018-01-31", "2018-03-02", 1.00, 0.13),
+        w("2018-02-07", "2018-03-09", 0.64, 0.11),
+        w("2018-02-14", "2018-03-16", 0.43, 0.17),  // cluster break — only sub-0.50 window
+        w("2018-02-21", "2018-03-23", 0.60, 0.13),
+        w("2018-02-28", "2018-03-30", 1.00, 0.17),
+        w("2018-03-07", "2018-04-06", 1.00, 0.25),
+        w("2018-03-14", "2018-04-13", 1.00, 0.33),
+        w("2018-03-21", "2018-04-20", 1.00, 0.25),
+        w("2018-03-28", "2018-04-27", 1.00, 0.25),
+        w("2018-04-04", "2018-05-04", 1.00, 0.33),
+        w("2018-04-11", "2018-05-11", 1.00, 0.14),
+        w("2018-04-18", "2018-05-18", 0.82, 0.18),
+        w("2018-04-25", "2018-05-25", 0.73, 0.08),
+        w("2018-05-02", "2018-06-01", 0.89, 0.07),
+        w("2018-05-09", "2018-06-08", 0.89, 0.07),
+        w("2018-05-16", "2018-06-15", 0.82, 0.09),
+        w("2018-05-23", "2018-06-22", 1.00, 0.10),
+        w("2018-05-30", "2018-06-29", 1.00, 0.23),
+        w("2018-06-06", "2018-07-06", 1.00, 0.06),
+        w("2018-06-13", "2018-07-13", 1.00, 0.07),
+        w("2018-06-20", "2018-07-20", 1.00, 0.08),
+        w("2018-06-27", "2018-07-27", 1.00, 0.33),
+        w("2018-07-04", "2018-08-03", 1.00, 0.20),
+        w("2018-07-11", "2018-08-10", 1.00, 0.17),
+        w("2018-07-18", "2018-08-17", 0.87, 0.10),
+        w("2018-07-25", "2018-08-24", 0.83, 0.11),
+        w("2018-08-01", "2018-08-31", 1.00, 0.08),
+        w("2018-08-08", "2018-09-07", 0.90, 0.07),
+        w("2018-08-15", "2018-09-14", 0.88, 0.09),
+        w("2018-08-22", "2018-09-21", 0.85, 0.07),
+        w("2018-08-29", "2018-09-28", 0.82, 0.06),
+        w("2018-09-05", "2018-10-05", 0.83, 0.06),
+        w("2018-09-12", "2018-10-12", 0.94, 0.06),
+        w("2018-09-19", "2018-10-19", 0.88, 0.05),
+        w("2018-09-26", "2018-10-26", 0.85, 0.05),
+        w("2018-10-03", "2018-11-02", 0.77, 0.06),
+        w("2018-10-10", "2018-11-09", 0.80, 0.08),
+        w("2018-10-17", "2018-11-16", 0.84, 0.06),
+        w("2018-10-24", "2018-11-23", 0.87, 0.06),
+        w("2018-10-31", "2018-11-30", 0.87, 0.06),
+        w("2018-11-07", "2018-12-07", 1.00, 0.07),
+        w("2018-11-14", "2018-12-14", 1.00, 0.07),
+        w("2018-11-21", "2018-12-21", 1.00, 0.17),
+        w("2018-11-28", "2018-12-28", 1.00, 0.17),
+        w("2018-12-05", "2019-01-04", 1.00, 0.25),
+        w("2018-12-12", "2019-01-11", 1.00, 0.33),
+        w("2018-12-19", "2019-01-18", 1.00, 0.29),
+        w("2018-12-26", "2019-01-25", 1.00, 0.29),
+        w("2019-01-02", "2019-02-01", 1.00, 0.17),
+        w("2019-01-09", "2019-02-08", 0.83, 0.06),
+        w("2019-01-16", "2019-02-15", 0.83, 0.07),
+        w("2019-01-23", "2019-02-22", 1.00, 0.10),
+        w("2019-01-30", "2019-03-01", 1.00, 0.11),
+        w("2019-02-06", "2019-03-08", 0.91, 0.09),
+        w("2019-02-13", "2019-03-15", 0.75, 0.07),
+        w("2019-02-20", "2019-03-22", 0.76, 0.06),
+        w("2019-02-27", "2019-03-29", 0.67, 0.06),
+        w("2019-03-06", "2019-04-05", 0.69, 0.05),
+        w("2019-03-13", "2019-04-12", 0.68, 0.06),
+        w("2019-03-20", "2019-04-19", 0.69, 0.11),
+        w("2019-03-27", "2019-04-26", 0.67, 0.09),
+        w("2019-04-03", "2019-05-03", 0.73, 0.09),
+        w("2019-04-10", "2019-05-10", 0.76, 0.08),
+        w("2019-04-17", "2019-05-17", 0.83, 0.10),
+        w("2019-04-24", "2019-05-24", 0.67, 0.08),
+        w("2019-05-01", "2019-05-31", 0.63, 0.08),
+        w("2019-05-08", "2019-06-07", 0.75, 0.08),
+        w("2019-05-15", "2019-06-14", 0.76, 0.08),
+        w("2019-05-22", "2019-06-21", 0.89, 0.08),
+        w("2019-05-29", "2019-06-28", 0.70, 0.08),
+        w("2019-06-05", "2019-07-05", 0.86, 0.10),
+        w("2019-06-12", "2019-07-12", 0.81, 0.09),
+        w("2019-06-19", "2019-07-19", 0.82, 0.08),
+        w("2019-06-26", "2019-07-26", 1.00, 0.14),
+        w("2019-07-03", "2019-08-02", 1.00, 0.14),
+        w("2019-07-10", "2019-08-09", 1.00, 0.25),
+        w("2019-07-17", "2019-08-16", 1.00, 0.33),
+        w("2019-07-24", "2019-08-23", 1.00, 0.17),
+        w("2019-07-31", "2019-08-30", 1.00, 0.33),
+        w("2019-08-07", "2019-09-06", 1.00, 0.50),
+        w("2019-08-14", "2019-09-13", 1.00, 0.50),
+        w("2019-08-21", "2019-09-20", 1.00, 0.50),
+        w("2019-08-28", "2019-09-27", 1.00, 0.50),
+        w("2019-09-04", "2019-10-04", 1.00, 0.50),
+        w("2019-09-11", "2019-10-11", 1.00, 0.25),
+        w("2019-09-18", "2019-10-18", 0.73, 0.11),
+        w("2019-09-25", "2019-10-25", 0.80, 0.08),
+        w("2019-10-02", "2019-11-01", 0.65, 0.09),
+        w("2019-10-09", "2019-11-08", 0.65, 0.09),
+        w("2019-10-16", "2019-11-15", 0.57, 0.11),
+        w("2019-10-23", "2019-11-22", 0.50, 0.11),
+        w("2019-10-30", "2019-11-29", 0.78, 0.13),
+        w("2019-11-06", "2019-12-06", 0.78, 0.13),
+        w("2019-11-13", "2019-12-13", 1.00, 0.25),
+    )
+
+    // Secondary departure Dec 2017: above attrition threshold (12.9% > 12% core impact).
+    // Values from actual run: massBefore=2909.7, massAfter=2515.3, dropFraction=0.14, core=12.9%
+    private val nodejsSecondWaveExodus = ExodusDetection(
+        inferredDate = Instant.parse("2017-12-20T00:00:00Z"),
+        departedContributors = listOf(
+            DepartedContributor("refack", 389.0, Instant.parse("2017-12-13T00:00:00Z")),
+            DepartedContributor("eugeneo", 63.0, Instant.parse("2017-12-13T00:00:00Z")),
+            DepartedContributor("rvagg", 38.0, Instant.parse("2017-12-13T00:00:00Z")),
+            DepartedContributor("seishun", 26.0, Instant.parse("2017-12-13T00:00:00Z")),
+            DepartedContributor("benjamingr", 15.0, Instant.parse("2017-12-13T00:00:00Z")),
+        ),
+        weightedMassBefore = 2909.7,
+        weightedMassAfter = 2515.3,
+        dropFraction = 0.14,
+        totalProjectCentrality = 4116.0,   // departed sum (531) / 0.129
+        departureCentralityFraction = 0.129,
+    )
+
+    // exodusAfterPeak (Dec 2017 after Oct 2017 centroid) → isResolved=true. isSharpRise=false
+    // (no baseline, no afterCluster dip below briefResolutionThreshold=0.40). 12.9% core impact
+    // > attritionCoreThreshold (12%) → not attrition → EXODUS.
+    @Test
+    fun `nodejs second-wave departure 2018-2019 gives EXODUS`() {
+        val result = detector.detect(nodejsSecondWaveScores, nodejsSecondWaveExodus)
+        assertEquals(TensionPattern.EXODUS, result.pattern)
+        assertEquals(TensionPattern.ATTRITION, result.alternativePattern, "12.9% core impact vs 12% threshold — should flag nearly ATTRITION")
     }
 }

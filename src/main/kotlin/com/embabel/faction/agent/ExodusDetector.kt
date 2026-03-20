@@ -18,6 +18,7 @@ package com.embabel.faction.agent
 import com.embabel.faction.domain.DepartedContributor
 import com.embabel.faction.domain.ExodusDetection
 import com.embabel.faction.domain.ReviewEdge
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -36,10 +37,12 @@ import java.time.temporal.ChronoUnit
 @Component
 class ExodusDetector {
 
+    private val logger = LoggerFactory.getLogger(javaClass)
+
     companion object {
         private const val WINDOW_DAYS = 30L
         private const val STEP_DAYS = 7L
-        private const val DROP_THRESHOLD = 0.25       // 25% weighted mass loss = step-change
+        private const val DROP_THRESHOLD = 0.15       // 15% weighted mass loss = step-change (tuned: nodejs Aug 2017 TSC exodus = 18%, nodejs 2018-19 attrition = 16%)
         private const val MIN_STABLE_WINDOWS = 3      // windows on each side to confirm step
         private const val MIN_CENTRALITY = 3.0        // ignore drive-by contributors
     }
@@ -67,7 +70,11 @@ class ExodusDetector {
 
         val activeBefore = windows.subList(maxOf(0, stepIdx - MIN_STABLE_WINDOWS), stepIdx)
             .flatMap { it.activeContributors }.toSet()
-        val activeAfter = windows.subList(stepIdx, minOf(windows.size, stepIdx + MIN_STABLE_WINDOWS))
+        // Start activeAfter at stepIdx+1: window stepIdx is the transition window where mass begins
+        // to drop. Contributors last seen there are in the process of departing; including it in the
+        // "after" set would hide them from the departed list.
+        val afterStart = minOf(stepIdx + 1, windows.size)
+        val activeAfter = windows.subList(afterStart, minOf(windows.size, afterStart + MIN_STABLE_WINDOWS))
             .flatMap { it.activeContributors }.toSet()
 
         val departed = (activeBefore - activeAfter)
@@ -85,7 +92,7 @@ class ExodusDetector {
         if (departed.isEmpty()) return null
 
         val massBefore = mass.subList(maxOf(0, stepIdx - MIN_STABLE_WINDOWS), stepIdx).average()
-        val massAfter = mass.subList(stepIdx, minOf(mass.size, stepIdx + MIN_STABLE_WINDOWS)).average()
+        val massAfter = mass.subList(afterStart, minOf(mass.size, afterStart + MIN_STABLE_WINDOWS)).average()
 
         val totalProjectCentrality = centrality.values.sum()
         val departedCentrality = departed.sumOf { it.centrality }
@@ -144,11 +151,18 @@ class ExodusDetector {
      * rolling average drops by at least [DROP_THRESHOLD] relative to the preceding average.
      */
     private fun findStepChange(mass: List<Double>): Int? {
+        var bestIdx: Int? = null
+        var bestDrop = 0.0
         for (i in MIN_STABLE_WINDOWS until mass.size - MIN_STABLE_WINDOWS) {
             val before = mass.subList(i - MIN_STABLE_WINDOWS, i).average()
             val after = mass.subList(i, i + MIN_STABLE_WINDOWS).average()
-            if (before > 0 && (before - after) / before >= DROP_THRESHOLD) return i
+            if (before > 0) {
+                val drop = (before - after) / before
+                if (drop > bestDrop) { bestDrop = drop; bestIdx = i }
+                if (drop >= DROP_THRESHOLD) return i
+            }
         }
+        if (bestIdx != null) logger.debug("ExodusDetector: best step-change candidate drop={} at index {} (threshold={}) — no exodus fired", bestDrop, bestIdx, DROP_THRESHOLD)
         return null
     }
 }

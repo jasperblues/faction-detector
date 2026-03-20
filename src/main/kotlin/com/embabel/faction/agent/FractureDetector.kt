@@ -133,6 +133,14 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
             afterCluster.firstOrNull { it.asymmetryRatio < peakWindow.asymmetryRatio * 0.4 }?.windowStart
         else null
 
+        val alternativePattern = computeAlternativePattern(
+            pattern = pattern,
+            peakAsymmetry = peakWindow.asymmetryRatio,
+            preClusterMean = preClusterMean,
+            hasBaseline = beforeCluster.isNotEmpty(),
+            exodus = exodus,
+        )
+
         return FractureDetection(
             pattern = pattern,
             severity = severity,
@@ -144,6 +152,7 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
             isResolved = isResolved,
             isRising = isRising,
             isReEscalating = isReEscalating,
+            alternativePattern = alternativePattern,
         )
     }
 
@@ -178,6 +187,60 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
     private fun isAttrition(exodus: ExodusDetection): Boolean =
         exodus.departureCentralityFraction < weights.attritionCoreThreshold &&
             exodus.dropFraction < weights.attritionDropThreshold
+
+    /**
+     * Returns the pattern this result nearly was, when the decisive threshold was within
+     * [DetectorWeights.borderlineMargin] of the crossing point. Null = clear-cut classification.
+     *
+     * Checks three boundaries in priority order:
+     * 1. ATTRITION ↔ EXODUS — driven by attritionCoreThreshold / attritionDropThreshold
+     * 2. FRACTURE_OCCURRED ↔ EXODUS — driven by sharpRiseDelta (when baseline exists)
+     * 3. FRACTURE_IMMINENT ↔ FRACTURE_LIKELY — driven by imminentThreshold
+     */
+    private fun computeAlternativePattern(
+        pattern: TensionPattern,
+        peakAsymmetry: Double,
+        preClusterMean: Double,
+        hasBaseline: Boolean,
+        exodus: ExodusDetection?,
+    ): TensionPattern? {
+        val m = weights.borderlineMargin
+        return when (pattern) {
+            TensionPattern.ATTRITION ->
+                if (exodus != null && (
+                        isNear(exodus.departureCentralityFraction, weights.attritionCoreThreshold, m) ||
+                        isNear(exodus.dropFraction, weights.attritionDropThreshold, m)))
+                    TensionPattern.EXODUS else null
+
+            TensionPattern.EXODUS -> when {
+                // Nearly ATTRITION: core impact just over threshold and drop already qualifies
+                exodus != null &&
+                        exodus.dropFraction < weights.attritionDropThreshold &&
+                        isNear(exodus.departureCentralityFraction, weights.attritionCoreThreshold, m) ->
+                    TensionPattern.ATTRITION
+                // Nearly FRACTURE_OCCURRED: isSharpRise delta was just below sharpRiseDelta
+                hasBaseline && isNear(peakAsymmetry - preClusterMean, weights.sharpRiseDelta, m) ->
+                    TensionPattern.FRACTURE_OCCURRED
+                else -> null
+            }
+
+            TensionPattern.FRACTURE_OCCURRED ->
+                if (hasBaseline && isNear(peakAsymmetry - preClusterMean, weights.sharpRiseDelta, m))
+                    TensionPattern.EXODUS else null
+
+            TensionPattern.FRACTURE_IMMINENT ->
+                if (isNear(peakAsymmetry, weights.imminentThreshold, m)) TensionPattern.FRACTURE_LIKELY else null
+
+            TensionPattern.FRACTURE_LIKELY ->
+                if (isNear(peakAsymmetry, weights.imminentThreshold, m)) TensionPattern.FRACTURE_IMMINENT else null
+
+            else -> null
+        }
+    }
+
+    /** True when [value] is within [margin] fraction of [threshold] on either side. */
+    private fun isNear(value: Double, threshold: Double, margin: Double) =
+        threshold > 0 && kotlin.math.abs(value - threshold) / threshold < margin
 
     /** Asymmetry-weighted centroid of the cluster — biased toward the hottest windows. */
     private fun clusterCentroid(cluster: List<WindowedScore>): Instant {

@@ -26,3 +26,4 @@ logging:
   level:
     org.drivine: WARN
     com.embabel.faction: INFO
+    com.embabel.faction.agent.ExodusDetector: DEBUG

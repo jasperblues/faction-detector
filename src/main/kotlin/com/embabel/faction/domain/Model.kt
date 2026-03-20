@@ -141,6 +141,9 @@ data class FractureDetection(
     val isResolved: Boolean,
     val isRising: Boolean,
     val isReEscalating: Boolean = false,
+    /** The pattern this result nearly was — set when the decisive threshold was crossed by < [DetectorWeights.borderlineMargin].
+     *  Null when the classification was clear-cut. */
+    val alternativePattern: TensionPattern? = null,
 )
 
 /**
@@ -188,7 +191,7 @@ data class DetectorWeights(
     /** Minimum post-cluster windows needed to confirm resolution. */
     val minPostWindows: Int = 3,
     /** Peak must exceed pre-cluster mean by at least this delta to count as a sharp rise. */
-    val sharpRiseDelta: Double = 0.4,
+    val sharpRiseDelta: Double = 0.38,
     /** A single post-cluster window below this level confirms a brief resolution (multi-wave). */
     val briefResolutionThreshold: Double = 0.4,
     /** Peak below this level → FRACTURE_LIKELY rather than FRACTURE_IMMINENT. */
@@ -206,6 +209,10 @@ data class DetectorWeights(
      *  sustained tension, not a brief post-fracture calm. Default 12 ≈ 3 months of 7-day steps.
      *  The nodejs io.js brief calm appeared in the 2nd afterCluster window — well within this. */
     val briefResolutionWindowSize: Int = 12,
+    /** Relative margin within which a threshold crossing is flagged as borderline.
+     *  0.10 = within 10% of the threshold value on either side.
+     *  E.g. attritionCoreThreshold=12%: flags cases in [10.8%, 13.2%]. */
+    val borderlineMargin: Double = 0.10,
 )
 
 /**
