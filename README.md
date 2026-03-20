@@ -64,9 +64,33 @@ The io.js fork was announced December 9, 2014. The review graph peaked **Novembe
 ## Prerequisites
 
 - JDK 21+
-- Neo4j running locally with GDS plugin installed
+- Neo4j running locally with GDS plugin installed (see below)
 - GitHub personal access token (with `repo` read scope)
 - Anthropic API key (or other Spring AI-compatible LLM)
+
+---
+
+## Neo4j with Docker
+
+Faction Detector requires Neo4j with the **Graph Data Science (GDS)** plugin for community detection. Start it with:
+
+```bash
+docker run \
+  --name neo4j-factions \
+  -p 7474:7474 -p 7687:7687 \
+  -v $HOME/.neo4j-factions/data:/data \
+  -e NEO4J_AUTH=neo4j/brahmsian \
+  -e NEO4J_PLUGINS='["graph-data-science"]' \
+  neo4j:5
+```
+
+On first start Neo4j downloads and installs GDS automatically — allow a minute or two. Once ready, open `http://localhost:7474` and run:
+
+```cypher
+CREATE DATABASE factions IF NOT EXISTS
+```
+
+> **Note:** Tests use a Neo4j testcontainer automatically — no local Neo4j needed to run the test suite.
 
 ---
 
@@ -129,10 +153,6 @@ mvn test
 ---
 
 ## Next Steps
-
-- **Threshold optimisation via labeled corpus**: Replace manual threshold tuning with a data-science approach. Build a ground-truth corpus of `(repo, since, until, expected_pattern)` cases from known historical fractures (Node.js io.js fork, Rust Mozilla layoffs, Terraform BSL, etc.), extract all detector thresholds into a `DetectorWeights` data class, and grid-search for the weight combination that maximises classification accuracy across the corpus. This makes regression testing explicit and removes the guesswork from threshold changes.
-
-- **Structural vs adversarial asymmetry**: Post-merger integration (e.g. Node.js June 2015–March 2016) produces elevated asymmetry that looks like FRACTURE_IMMINENT but reflects healthy specialisation. Explore additional signals (modularity trend, cross-community review rate) to distinguish structural from adversarial divergence.
 
 - **Multi-repo support**: Accept a list of repos and produce a comparative report.
 

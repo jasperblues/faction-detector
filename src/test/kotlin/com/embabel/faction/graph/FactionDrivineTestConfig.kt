@@ -27,25 +27,42 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.EnableAspectJAutoProxy
 import org.springframework.core.env.MapPropertySource
+import org.testcontainers.containers.Neo4jContainer
 
 /**
  * Provides all Drivine datasource properties before the Spring context starts.
  *
- * Default: local Neo4j at localhost:7687, factions database.
- * Set USE_LOCAL_NEO4J=false to spin up a testcontainer instead (community, neo4j DB).
+ * Default: local Neo4j at localhost:7687 (requires GDS for Louvain tests).
+ * Set -Dtest.neo4j.use-local=false to spin up a Neo4j testcontainer instead.
+ * The Louvain GDS test skips automatically when not running against local Neo4j.
  */
 class FactionNeo4jInitializer : ApplicationContextInitializer<ConfigurableApplicationContext> {
     override fun initialize(ctx: ConfigurableApplicationContext) {
-        // Use neo4j default database — exists on both local Enterprise and testcontainer Community
+        val useLocal = System.getProperty("test.neo4j.use-local", "true") == "true"
+        val (host, port, password) = if (useLocal) {
+            Triple("localhost", 7687, "brahmsian")
+        } else {
+            val c = sharedContainer
+            Triple(c.host, c.getMappedPort(7687), c.adminPassword)
+        }
         val props: Map<String, Any> = mapOf(
             "database.datasources.factions.type" to "NEO4J",
             "database.datasources.factions.userName" to "neo4j",
-            "database.datasources.factions.password" to "brahmsian",
-            "database.datasources.factions.host" to "localhost",
-            "database.datasources.factions.port" to 7687,
+            "database.datasources.factions.password" to password,
+            "database.datasources.factions.host" to host,
+            "database.datasources.factions.port" to port,
             "database.datasources.factions.databaseName" to "neo4j",
         )
         ctx.environment.propertySources.addFirst(MapPropertySource("factionTestNeo4j", props))
+    }
+
+    companion object {
+        /** Shared container — started once, reused across all test classes in the same JVM. */
+        val sharedContainer: Neo4jContainer<*> by lazy {
+            Neo4jContainer<Nothing>("neo4j:5")
+                .withAdminPassword("brahmsian")
+                .also { it.start() }
+        }
     }
 }
 
