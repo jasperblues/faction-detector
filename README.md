@@ -61,12 +61,44 @@ The io.js fork was announced December 9, 2014. The review graph peaked **Novembe
 
 ---
 
+## Limitations
+
+- **Minimum project size**: Results are unreliable for projects with fewer than ~5 active reviewers in a given window. When only 2–3 people are reviewing, asymmetry scores collapse to binary 0/1 noise — the metric requires a real reviewer graph to be meaningful. Projects in managed decline (e.g. a framework superseded by its own successor) often fall below this threshold and can produce spurious FRACTURE_IMMINENT readings.
+- **GitHub PR reviews only**: The tool only sees review activity on GitHub pull requests. Projects that use email, Gerrit, Phabricator, or bot-mediated approvals will appear to have little or no data.
+- **Review asymmetry ≠ conflict**: High asymmetry can reflect structural specialisation (separate frontend/backend teams) as well as adversarial dynamics. The LLM narrative attempts to distinguish these, but treat results as signals to investigate, not verdicts.
+- **Bot accounts**: Accounts matching common bot patterns (`[bot]`, `-bot`) are filtered automatically. Project-specific automation accounts (e.g. `elasticmachine`) are not. If the narrative mentions a bot or automation account as a significant reviewer or bridge figure, re-run with the `--bots` flag to exclude it:
+  ```
+  analyse --repo elastic/elasticsearch --since 2020-01-01 --bots elasticmachine,merge-bot
+  ```
+
+---
+
 ## Prerequisites
 
-- JDK 21+
-- Neo4j running locally with GDS plugin installed (see below)
-- GitHub personal access token (with `repo` read scope)
-- Anthropic API key (or other Spring AI-compatible LLM)
+### Java (JDK 21+)
+
+If you don't have Java installed, the easiest way is [SDKMAN](https://sdkman.io) — a version manager that works on Mac and Linux:
+
+```bash
+curl -s "https://get.sdkman.io" | bash   # installs SDKMAN
+sdk install java 21-tem                  # installs Temurin JDK 21
+```
+
+On Mac you can also use Homebrew: `brew install openjdk@21`
+
+Verify it worked: `java -version` should show `21` or higher.
+
+### Docker
+
+Neo4j (the graph database) runs in Docker. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) if you don't have it, then verify with `docker ps`.
+
+### GitHub personal access token
+
+Create one at **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**. It only needs read access to public repositories — no write permissions required.
+
+### Anthropic API key
+
+Get one at **[console.anthropic.com](https://console.anthropic.com)**.
 
 ---
 
@@ -96,38 +128,65 @@ CREATE DATABASE factions IF NOT EXISTS
 
 ## Running
 
-### 1. GitHub token
-
-Create a personal access token at **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**. It only needs read access to public repositories — no write permissions required.
+### 1. Set your API keys
 
 ```bash
-export FACTION_GITHUB_TOKEN=ghp_...
+export FACTION_GITHUB_TOKEN=ghp_...    # GitHub personal access token
+export ANTHROPIC_API_KEY=sk-ant-...    # Anthropic API key
 ```
 
-### 2. Anthropic API key
-
-Get an API key at **[console.anthropic.com](https://console.anthropic.com)**.
+Add both to your shell profile (`~/.zshrc` on Mac, `~/.bashrc` on Linux) so you don't have to set them each session:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+echo 'export FACTION_GITHUB_TOKEN=ghp_...'   >> ~/.zshrc
+echo 'export ANTHROPIC_API_KEY=sk-ant-...'   >> ~/.zshrc
+source ~/.zshrc
 ```
 
-Add both to your shell profile (`~/.zshrc`, `~/.bashrc`) to avoid setting them each session.
+### 2. Start Neo4j
 
-### 3. Start the shell:
+See the [Neo4j with Docker](#neo4j-with-docker) section below, then come back here.
+
+### 3. Build
+
+The project includes a Maven wrapper — no need to install Maven separately:
 
 ```bash
-mvn spring-boot:run
+./mvnw install -DskipTests
 ```
 
-Analyse a repo:
+This downloads dependencies and compiles the project. First run takes a few minutes.
+
+### 4a. Interactive shell
 
 ```bash
-# Named date range
-analyse --repo nodejs/node --since 2013-06-01 --until 2015-06-01
+./mvnw spring-boot:run
+```
 
-# Last N days
-analyse --repo redis/redis --days 365
+Then at the prompt:
+
+```
+faction-detector:> analyse --repo nodejs/node --since 2013-06-01 --until 2015-06-01
+faction-detector:> analyse --repo redis/redis --days 365
+```
+
+### 4b. One-shot CLI
+
+The `faction` script in the project root wraps the built jar:
+
+```bash
+./faction analyse --repo nodejs/node --since 2013-06-01 --until 2015-06-01
+./faction analyse --repo redis/redis --days 365
+```
+```
+
+This is useful for batch runs or scripting hypotheses overnight:
+
+```bash
+#!/bin/bash
+./faction analyse --repo nodejs/node --since 2018-06-01 --until 2020-01-01
+./faction analyse --repo babel/babel  --since 2020-06-01 --until 2022-06-01
+./faction analyse --repo rust-lang/rust --since 2021-06-01 --until 2023-01-01
 ```
 
 ---
@@ -154,6 +213,7 @@ mvn test
 
 ## Next Steps
 
+- **GitHub Reviews API**: Currently the tool only captures review *comments*. Projects that use silent approvals (click Approve without leaving a comment) are invisible. Fetching formal review events via `/pulls/{number}/reviews` would unlock this class of project.
 - **Multi-repo support**: Accept a list of repos and produce a comparative report.
 
 ---

@@ -52,7 +52,14 @@ private val DATE_PATTERN = Regex("\\d{4}-\\d{2}-\\d{2}")
  *   - `owner/repo 2013-06-01 2015-06-01` — explicit date range
  */
 internal fun parseAnalysisInput(input: String): AnalysisRequest {
-    val parts = input.trim().split("\\s+".toRegex())
+    val trimmed = input.trim()
+    // Extract --bots=name1,name2 before splitting positional args
+    val botsMatch = Regex("""--bots=(\S+)""").find(trimmed)
+    val excludeBots = botsMatch?.groupValues?.get(1)
+        ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+    val positional = trimmed.replace(botsMatch?.value ?: "", "").trim()
+
+    val parts = positional.split("\\s+".toRegex())
     val repoParts = parts[0].split("/")
     val owner = repoParts[0]
     val repo = repoParts.getOrElse(1) { repoParts[0] }
@@ -70,7 +77,7 @@ internal fun parseAnalysisInput(input: String): AnalysisRequest {
         until = null
     }
 
-    return AnalysisRequest(owner = owner, repo = repo, since = since, until = until)
+    return AnalysisRequest(owner = owner, repo = repo, since = since, until = until, excludeBots = excludeBots)
 }
 
 /**
@@ -84,6 +91,8 @@ data class AnalysisRequest(
     val since: Instant,
     val until: Instant? = null,
     val runId: String = java.util.UUID.randomUUID().toString().take(8),
+    /** Additional bot/automation account logins to exclude beyond the default pattern filter. */
+    val excludeBots: Set<String> = emptySet(),
 )
 
 /**
@@ -172,7 +181,7 @@ class FactionDetectorAgent(
 
     @Action
     fun fetchAndPersist(request: AnalysisRequest): FetchResult {
-        val edges = gitHubClient.fetchReviewEdges(request.owner, request.repo, request.since, request.until)
+        val edges = gitHubClient.fetchReviewEdges(request.owner, request.repo, request.since, request.until, request.excludeBots)
         graphBuilder.persist(edges, request.runId)
         val windowedScores = asymmetryScorer.score(edges, request.since, until = request.until)
         val flaggedPairs = pairAnomalyScorer.topAnomalies(edges)
@@ -187,6 +196,7 @@ class FactionDetectorAgent(
             recentPrNumbers = edges.mapNotNull { it.prNumber }.distinct().take(50),
             edges = edges,
             runId = request.runId,
+            excludeBots = request.excludeBots,
         )
     }
 
@@ -213,6 +223,7 @@ class FactionDetectorAgent(
             communityAssignments = communityAssignments,
             edges = fetch.edges,
             runId = fetch.runId,
+            excludeBots = fetch.excludeBots,
         )
     }
 
@@ -265,7 +276,7 @@ class FactionDetectorAgent(
             val repo = windowed.repo.substringAfter("/")
             val backfillSince = windowed.since.minus(180, ChronoUnit.DAYS)
             logger.info("Backfilling baseline: fetching {}/{} from {} to {}", owner, repo, backfillSince.toString().take(10), windowed.since.toString().take(10))
-            val backfillEdges = gitHubClient.fetchReviewEdges(owner, repo, backfillSince, windowed.since)
+            val backfillEdges = gitHubClient.fetchReviewEdges(owner, repo, backfillSince, windowed.since, windowed.excludeBots)
             if (backfillEdges.isNotEmpty()) {
                 logger.info("Backfill complete: {} edges, re-running fracture detection", backfillEdges.size)
                 allEdges = backfillEdges + allEdges
@@ -571,6 +582,7 @@ data class FetchResult(
     val recentPrNumbers: List<Int>,
     val edges: List<ReviewEdge>,
     val runId: String,
+    val excludeBots: Set<String> = emptySet(),
 )
 
 /** Intermediate domain object carrying windowed scores, LLM-scored pairs, and GDS community assignments. */
@@ -584,4 +596,5 @@ data class WindowedScores(
     val communityAssignments: Map<String, Int> = emptyMap(),
     val edges: List<ReviewEdge> = emptyList(),
     val runId: String,
+    val excludeBots: Set<String> = emptySet(),
 )

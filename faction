@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Faction Detector CLI wrapper
+# Run `./mvnw install -DskipTests` once to build the jar, then use this script directly.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JAR=$(echo "$SCRIPT_DIR"/target/faction-detector-*.jar | tr ' ' '\n' | head -1)
+
+if [[ ! -f "$JAR" ]]; then
+  echo "No jar found in target/. Run: mvn install -DskipTests" >&2
+  exit 1
+fi
+
+exec java -jar "$JAR" "$@"

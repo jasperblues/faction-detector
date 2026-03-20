@@ -35,11 +35,17 @@ class FactionShell(
         @ShellOption(defaultValue = "180", help = "Days of history to analyse (ignored if --since is set)") days: Int,
         @ShellOption(defaultValue = "", help = "Start date ISO-8601 (e.g. 2013-06-01); overrides --days") since: String,
         @ShellOption(defaultValue = "", help = "End date ISO-8601 (e.g. 2015-06-01); defaults to now") until: String,
+        @ShellOption(defaultValue = "", help = "Comma-separated bot/automation logins to exclude, e.g. elasticmachine,dependabot") bots: String,
     ): String {
-        val input = if (since.isNotBlank()) buildString {
-            append("$repo $since")
-            if (until.isNotBlank()) append(" $until")
-        } else "$repo $days"
+        val input = buildString {
+            if (since.isNotBlank()) {
+                append("$repo $since")
+                if (until.isNotBlank()) append(" $until")
+            } else {
+                append("$repo $days")
+            }
+            if (bots.isNotBlank()) append(" --bots=$bots")
+        }
         val result = AgentInvocation
             .create(agentPlatform, SplitPredictionResult::class.java)
             .invoke(UserInput(input))

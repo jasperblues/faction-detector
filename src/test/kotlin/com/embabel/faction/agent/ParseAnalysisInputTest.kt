@@ -58,4 +58,18 @@ class ParseAnalysisInputTest {
         val diff = Math.abs(req.since.epochSecond - expectedApprox.epochSecond)
         assertTrue(diff < 5, "since should be ~180 days ago")
     }
+
+    @Test
+    fun `--bots flag is parsed into excludeBots set`() {
+        val req = parseAnalysisInput("elastic/elasticsearch 2020-09-01 2022-06-01 --bots=elasticmachine,dependabot")
+        assertEquals("elastic", req.owner)
+        assertEquals("elasticsearch", req.repo)
+        assertEquals(setOf("elasticmachine", "dependabot"), req.excludeBots)
+    }
+
+    @Test
+    fun `excludeBots is empty when --bots not provided`() {
+        val req = parseAnalysisInput("nodejs/node 2013-06-01 2015-06-01")
+        assertTrue(req.excludeBots.isEmpty())
+    }
 }

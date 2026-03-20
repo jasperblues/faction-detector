@@ -105,19 +105,19 @@ class GitHubClient(private val properties: GitHubProperties) {
      * Crawl all PR comment edges for a repo within the given time window.
      * Returns one ReviewEdge per unique commenter per PR.
      */
-    fun fetchReviewEdges(owner: String, repo: String, since: Instant, until: Instant? = null): List<ReviewEdge> {
+    fun fetchReviewEdges(owner: String, repo: String, since: Instant, until: Instant? = null, excludeBots: Set<String> = emptySet()): List<ReviewEdge> {
         val cacheFile = cacheFile(owner, repo, since, until)
         if (cacheFile.exists()) {
             logger.info("Cache hit for {}/{} [{} → {}] — skipping GitHub fetch", owner, repo, since, until ?: "now")
             return cacheMapper.readValue<List<ReviewEdge>>(cacheFile.readText())
-                .filter { it.reviewer.isHumanContributor() && it.author.isHumanContributor() }
+                .filter { it.reviewer.isHumanContributor(excludeBots) && it.author.isHumanContributor(excludeBots) }
         }
 
         logger.info("Crawling PRs for {}/{} since {} until {}", owner, repo, since, until ?: "now")
         val prs = fetchAllPrs(owner, repo, since, until)
         logger.info("Found {} merged PRs", prs.size)
 
-        val edges = buildCommentEdges(owner, repo, prs, until)
+        val edges = buildCommentEdges(owner, repo, prs, until, excludeBots)
         logger.info("Built {} edges from {} PRs", edges.size, prs.size)
 
         val bounded = edges.filterEdgesByWindow(since, until)
@@ -136,10 +136,11 @@ class GitHubClient(private val properties: GitHubProperties) {
         return cacheDir.resolve(key)
     }
 
-    private fun String.isHumanContributor() = this != "ghost"
+    private fun String.isHumanContributor(excludeBots: Set<String> = emptySet()) = this != "ghost"
         && !this.endsWith("[bot]")
         && !this.endsWith("-bot")
         && !this.contains("-bot-")
+        && this !in excludeBots
 
     /**
      * Builds edges from inline PR comments. One edge per unique commenter per PR.
@@ -150,6 +151,7 @@ class GitHubClient(private val properties: GitHubProperties) {
         repo: String,
         prs: List<GitHubPr>,
         until: Instant? = null,
+        excludeBots: Set<String> = emptySet(),
     ): List<ReviewEdge> {
         return prs.flatMapIndexed { idx, pr ->
             if (idx % 50 == 0) logger.info("Fetching comments for PR {}/{} (PR #{})", idx + 1, prs.size, pr.number)
@@ -157,14 +159,14 @@ class GitHubClient(private val properties: GitHubProperties) {
             val prMerged = pr.mergedAt?.let { Instant.parse(it) }
             val allCommenters: Map<String, List<Instant>> = buildMap {
                 fetchReviewComments(owner, repo, pr.number)
-                    .filter { it.user.login != pr.user.login && it.user.login.isHumanContributor() }
+                    .filter { it.user.login != pr.user.login && it.user.login.isHumanContributor(excludeBots) }
                     .groupBy { it.user.login }
                     .forEach { (login, comments) ->
                         merge(login, comments.mapNotNull { it.createdAt?.let { ts -> Instant.parse(ts) } }
                             .filter { until == null || it.isBefore(until) }) { a, b -> a + b }
                     }
                 fetchIssueComments(owner, repo, pr.number)
-                    .filter { it.user.login != pr.user.login && it.user.login.isHumanContributor() }
+                    .filter { it.user.login != pr.user.login && it.user.login.isHumanContributor(excludeBots) }
                     .groupBy { it.user.login }
                     .forEach { (login, comments) ->
                         merge(login, comments.map { Instant.parse(it.createdAt) }
