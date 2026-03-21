@@ -173,16 +173,16 @@ class FactionDetectorAgent(
         /** Minimum review edges for a meaningful analysis. Below this the graph is too sparse
          *  for asymmetry or community detection to be reliable. */
         private const val MIN_EDGES = 20
-        // 9-window cluster + ~4 pre-baseline + ~3 post-resolution = 16 windows minimum.
-        // 120 days ≈ 17 rolling weeks — enough room for a full FRACTURE_OCCURRED to form.
         /** Minimum rolling windows for a meaningful fracture detection pass.
-         *  FRACTURE_OCCURRED needs minFractureClusterSize(9) + ~4 pre-baseline + minPostWindows(3) = 16.
-         *  We require 16 (≈120 days) so there is enough context around a full fracture cluster. */
-        private const val MIN_WINDOWS = 16
+         *  Calibrated to the nodejs/io.js corpus case — the smallest confirmed fracture
+         *  detectable in live GitHub data (12 windows, Nov 2014 – Feb 2015).
+         *  Pre-cluster baseline may be absent for early repos; the detector handles
+         *  the no-baseline path gracefully. */
+        private const val MIN_WINDOWS = 12
         /** Minimum date-range span in days. Checked before any GitHub API call.
-         *  120 days ≈ 17 rolling weeks — enough room for a 9-window fracture cluster plus
-         *  pre-baseline and post-resolution context. */
-        private const val MIN_WINDOW_DAYS = 120L
+         *  90 days ≈ 13 rolling weeks — enough room for a fracture cluster plus
+         *  post-resolution context. */
+        private const val MIN_WINDOW_DAYS = 90L
     }
     private val logger = LoggerFactory.getLogger(javaClass)
 

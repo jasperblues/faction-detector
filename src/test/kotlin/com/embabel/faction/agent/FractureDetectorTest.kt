@@ -15,6 +15,7 @@
  */
 package com.embabel.faction.agent
 
+import com.embabel.faction.domain.DetectorWeights
 import com.embabel.faction.domain.TensionPattern
 import com.embabel.faction.domain.TensionSeverity
 import com.embabel.faction.domain.WindowedScore
@@ -135,6 +136,25 @@ class FractureDetectorTest {
         )
         val result = detector.detect(scores, factionSignal = 0.55)
         assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionSeverity.EXTREME, result.severity)
+        assertTrue(result.isResolved)
+    }
+
+    @Test
+    fun `9-window cluster with low faction signal stays GOVERNANCE_CRISIS`() {
+        // Gate enabled at 0.35; factionSignal=0.20 (below threshold) → demotes FRACTURE_OCCURRED.
+        // Mirrors the live terraform BSL result: license-driven fork, no adversarial review signal.
+        val weights = DetectorWeights(minOccurredFactionSignal = 0.35)
+        val gated = FractureDetector(weights)
+        val scores = listOf(
+            score(0.2, 36), score(0.25, 34),                             // baseline
+            score(0.6, 28), score(0.75, 26), score(0.9, 24),
+            score(1.0, 22), score(0.95, 20), score(0.85, 18),
+            score(0.75, 16), score(0.7, 14), score(0.6, 12),            // 9-window cluster
+            score(0.3, 6), score(0.2, 4), score(0.15, 2),               // resolved
+        )
+        val result = gated.detect(scores, factionSignal = 0.20)
+        assertEquals(TensionPattern.GOVERNANCE_CRISIS, result.pattern)
         assertEquals(TensionSeverity.EXTREME, result.severity)
         assertTrue(result.isResolved)
     }

@@ -46,7 +46,7 @@ import java.time.Instant
  * | nodejs/node | 2013-06-01 → 2015-03-01 | FRACTURE_OCCURRED | io.js fork Jan 2015 |
  * | rust-lang/rust | 2020-01-01 → 2020-08-01 | FRACTURE_IMMINENT | Mozilla layoffs Aug 2020 (pre-event) |
  * | rust-lang/rust | 2020-01-01 → 2021-06-01 | ATTRITION | Mozilla layoffs — external forced departure, no fork |
- * | hashicorp/terraform | 2022-06-01 → 2024-06-01 | FRACTURE_OCCURRED | BSL licence change Aug 2023, OpenTofu fork Sep 2023 |
+ * | hashicorp/terraform | 2022-06-01 → 2024-06-01 | FRACTURE_OCCURRED | BSL licence change Aug 2023, OpenTofu fork Sep 2023. Corpus test passes factionSignal=null (gate bypassed). Live run with gate at 0.35 returns GOVERNANCE_CRISIS (factionSignal=0.14–0.17) — fork was license-driven not adversarial; both are correct in context. |
  * | hashicorp/terraform | 2021-06-01 → 2022-05-01 | FRACTURE_IMMINENT | pre-BSL tension; rising at window end |
  * | babel/babel | 2018-01-01 → 2020-06-01 | EXODUS | Babel 7 release crunch Aug–Oct 2018; gradual resolution Dec 2018 |
  * | redis/redis | 2021-01-01 → 2023-12-01 | FRACTURE_IMMINENT | pre-Valkey tension; rising at window end |

@@ -229,7 +229,7 @@ data class DetectorWeights(
      *  adversarial comment signal to confirm a fracture. 0.0 = gate disabled (default, backward
      *  compatible). The live pipeline sets this to ~0.35 to require observed nitpicky/hostile
      *  review behaviour on top of the structural asymmetry. */
-    val minOccurredFactionSignal: Double = 0.0,
+    val minOccurredFactionSignal: Double = 0.35,
     /** Only check this many afterCluster windows for a brief resolution dip. A dip months after
      *  the cluster ends (e.g. redis: first sub-0.40 dip is 5 months post-cluster) is a lull in
      *  sustained tension, not a brief post-fracture calm. Default 12 ≈ 3 months of 7-day steps.

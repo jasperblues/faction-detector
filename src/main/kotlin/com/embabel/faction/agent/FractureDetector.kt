@@ -44,18 +44,37 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
     fun detect(scores: List<WindowedScore>, exodus: ExodusDetection? = null, factionSignal: Double? = null): FractureDetection {
         if (scores.isEmpty()) return stable(Instant.now(), 0.0, 0)
 
-        val peakWindow = scores.maxByOrNull { it.asymmetryRatio }!!
+        val globalPeak = scores.maxByOrNull { it.asymmetryRatio }!!
 
-        if (peakWindow.asymmetryRatio < weights.tensionThreshold) {
-            return stable(peakWindow.windowStart, peakWindow.asymmetryRatio, peakWindow.connectedComponents)
+        if (globalPeak.asymmetryRatio < weights.tensionThreshold) {
+            return stable(globalPeak.windowStart, globalPeak.asymmetryRatio, globalPeak.connectedComponents)
         }
 
-        val cluster = findPeakCluster(scores, peakWindow)
+        val peakCluster = findPeakCluster(scores, globalPeak)
+
+        // If the peak cluster is too small for any non-trivial classification, check whether a more
+        // sustained cluster exists elsewhere in the series. A brief initial spike followed by a
+        // brief dip and then a long re-escalation (e.g. a holiday lull between two tension waves)
+        // should classify on the dominant sustained period, not the small initial burst.
+        // We only fall back when the peak cluster is below minOccurredClusterSize — clusters large
+        // enough to yield GOVERNANCE_CRISIS or better are kept as-is.
+        val cluster = if (peakCluster.size < weights.minOccurredClusterSize) {
+            findAllClusters(scores)
+                .filter { it !== peakCluster && it.size >= weights.minClusterSize }
+                .maxByOrNull { c -> c.sumOf { it.asymmetryRatio } }
+                ?: peakCluster
+        } else {
+            peakCluster
+        }
 
         // Cluster too small: isolated spike in a small reviewer pool, not sustained tension.
         if (cluster.size < weights.minClusterSize) {
-            return stable(peakWindow.windowStart, peakWindow.asymmetryRatio, peakWindow.connectedComponents)
+            return stable(globalPeak.windowStart, globalPeak.asymmetryRatio, globalPeak.connectedComponents)
         }
+
+        // Peak within the selected cluster (may differ from the global peak when the fallback
+        // cluster is used).
+        val peakWindow = cluster.maxByOrNull { it.asymmetryRatio }!!
 
         val peakDate = clusterCentroid(cluster)
 
@@ -67,8 +86,7 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
         val preClusterMean = beforeCluster.map { it.asymmetryRatio }.average().takeIf { !it.isNaN() } ?: 0.0
         val postClusterMean = afterCluster.map { it.asymmetryRatio }.average().takeIf { !it.isNaN() } ?: Double.MAX_VALUE
 
-        val peakIdx = scores.indexOf(peakWindow)
-        val peakIsRecent = peakIdx >= scores.size - weights.recentWindowCount
+        val peakIsRecent = scores.indexOf(peakWindow) >= scores.size - weights.recentWindowCount
         val exodusAfterPeak = exodus != null && exodus.inferredDate.isAfter(peakDate)
         val asymmetryDropped = afterCluster.size >= weights.minPostWindows &&
                 postClusterMean < peakWindow.asymmetryRatio * weights.resolutionRatio
@@ -202,7 +220,7 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
         isRising = false,
     )
 
-    /** Expands outward from [peakWindow] to include all contiguous windows above [threshold]. */
+    /** Expands outward from [peakWindow] to include all contiguous windows above threshold. */
     private fun findPeakCluster(scores: List<WindowedScore>, peakWindow: WindowedScore): List<WindowedScore> {
         val peakIdx = scores.indexOf(peakWindow)
         var left = peakIdx
@@ -210,6 +228,22 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
         var right = peakIdx
         while (right < scores.size - 1 && scores[right + 1].asymmetryRatio >= weights.tensionThreshold) right++
         return scores.subList(left, right + 1)
+    }
+
+    /** Returns all contiguous above-threshold clusters in chronological order. */
+    private fun findAllClusters(scores: List<WindowedScore>): List<List<WindowedScore>> {
+        val clusters = mutableListOf<List<WindowedScore>>()
+        var i = 0
+        while (i < scores.size) {
+            if (scores[i].asymmetryRatio >= weights.tensionThreshold) {
+                val start = i
+                while (i < scores.size && scores[i].asymmetryRatio >= weights.tensionThreshold) i++
+                clusters.add(scores.subList(start, i))
+            } else {
+                i++
+            }
+        }
+        return clusters
     }
 
     /**
