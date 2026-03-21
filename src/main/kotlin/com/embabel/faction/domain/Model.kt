@@ -54,36 +54,6 @@ data class ReviewEdge(
 }
 
 /**
- * Weighted review graph for a single time window.
- */
-data class ReviewGraph(
-    val repo: String,
-    val windowStart: Instant,
-    val windowEnd: Instant,
-    val contributors: Set<String>,
-    val edges: List<ReviewEdge>,
-)
-
-/**
- * A detected community (faction) within the contributor graph.
- */
-data class Community(
-    val id: Int,
-    val members: Set<String>,
-)
-
-/**
- * Result of community detection and asymmetry scoring for one time window.
- */
-data class FactionAnalysis(
-    val graph: ReviewGraph,
-    val communities: List<Community>,
-    val modularity: Double,
-    val asymmetryRatio: Double,
-    val splitRiskScore: Double,
-)
-
-/**
  * Asymmetry score for a single rolling window — used for trend analysis.
  *
  * [edgeCount] is the number of core-contributor edges in the window after filtering.
