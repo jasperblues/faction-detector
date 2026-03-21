@@ -16,6 +16,7 @@
 package com.embabel.faction.agent
 
 import com.embabel.faction.domain.DepartedContributor
+import com.embabel.faction.domain.DetectorWeights
 import com.embabel.faction.domain.ExodusDetection
 import com.embabel.faction.domain.ReviewEdge
 import org.slf4j.LoggerFactory
@@ -35,7 +36,7 @@ import java.time.temporal.ChronoUnit
  * peripheral contributors.
  */
 @Component
-class ExodusDetector {
+class ExodusDetector(private val weights: DetectorWeights = DetectorWeights()) {
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -58,7 +59,8 @@ class ExodusDetector {
     fun detect(edges: List<ReviewEdge>, windowUntil: Instant? = null): ExodusDetection? {
         if (edges.isEmpty()) return null
 
-        val centrality = computeCentrality(edges)
+        val stats = computeContributorStats(edges)
+        val centrality = stats.mapValues { it.value.centrality }
         val since = edges.minOf { it.timestamp }
         val until = windowUntil ?: edges.maxOf { it.timestamp }
 
@@ -94,7 +96,13 @@ class ExodusDetector {
         val massBefore = mass.subList(maxOf(0, stepIdx - MIN_STABLE_WINDOWS), stepIdx).average()
         val massAfter = mass.subList(afterStart, minOf(mass.size, afterStart + MIN_STABLE_WINDOWS)).average()
 
-        val totalProjectCentrality = centrality.values.sum()
+        // Denominator: centrality of contributors active within 6 months before the departure,
+        // so the impact is measured against who was actually around — not inflated by
+        // historical contributors who left years ago.
+        val departureCutoff = windows[stepIdx].windowStart.minus(weights.activeCentralityMonths * 30, ChronoUnit.DAYS)
+        val contemporaneousCentrality = stats
+            .filter { it.value.lastActive >= departureCutoff && it.value.centrality >= MIN_CENTRALITY }
+            .values.sumOf { it.centrality }
         val departedCentrality = departed.sumOf { it.centrality }
 
         return ExodusDetection(
@@ -103,19 +111,23 @@ class ExodusDetector {
             weightedMassBefore = massBefore,
             weightedMassAfter = massAfter,
             dropFraction = if (massBefore > 0) (massBefore - massAfter) / massBefore else 0.0,
-            totalProjectCentrality = totalProjectCentrality,
-            departureCentralityFraction = if (totalProjectCentrality > 0) departedCentrality / totalProjectCentrality else 0.0,
+            totalProjectCentrality = contemporaneousCentrality,
+            departureCentralityFraction = if (contemporaneousCentrality > 0) departedCentrality / contemporaneousCentrality else 0.0,
         )
     }
 
-    /** Total review interactions per contributor across the full window. */
-    private fun computeCentrality(edges: List<ReviewEdge>): Map<String, Double> {
-        val counts = mutableMapOf<String, Double>()
+    private data class ContributorStats(val centrality: Double, val lastActive: Instant)
+
+    private fun computeContributorStats(edges: List<ReviewEdge>): Map<String, ContributorStats> {
+        val centrality = mutableMapOf<String, Double>()
+        val lastActive = mutableMapOf<String, Instant>()
         edges.forEach { e ->
-            counts[e.reviewer] = (counts[e.reviewer] ?: 0.0) + 1.0
-            counts[e.author] = (counts[e.author] ?: 0.0) + 1.0
+            centrality[e.reviewer] = (centrality[e.reviewer] ?: 0.0) + 1.0
+            centrality[e.author] = (centrality[e.author] ?: 0.0) + 1.0
+            lastActive.merge(e.reviewer, e.timestamp) { a, b -> maxOf(a, b) }
+            lastActive.merge(e.author, e.timestamp) { a, b -> maxOf(a, b) }
         }
-        return counts
+        return centrality.mapValues { (login, c) -> ContributorStats(c, lastActive[login]!!) }
     }
 
     private data class Window(

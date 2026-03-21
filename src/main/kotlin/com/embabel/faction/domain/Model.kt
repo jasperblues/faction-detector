@@ -67,6 +67,12 @@ data class WindowedScore(
     val connectedComponents: Int,
     val modularity: Double,
     val edgeCount: Int = 0,
+    /** Average factionSignal across all scored reviewer→author pairs active in this window.
+     *  Null when no pairs were scored (no LLM data available for this window).
+     *  Used by FractureDetector to compute relative faction signal — crisis vs baseline — which
+     *  distinguishes adversarial forks (signal rises above baseline) from uprisings
+     *  (signal stays at or falls below baseline as the community unifies against the steward). */
+    val windowFactionSignal: Double? = null,
 )
 
 enum class TensionPattern {
@@ -84,13 +90,21 @@ enum class TensionPattern {
     /** Sharp asymmetry spike that resolved, but without confirmed adversarial comment signal or
      *  a long enough sustained cluster to confirm a fork-level event. May represent an
      *  organisational restructuring, corporate withdrawal, or brief internal crisis that healed.
-     *  Actionable but less certain than FRACTURE_OCCURRED. */
+     *  Actionable but less certain than FRACTURE_ADVERSARIAL_FORK or FRACTURE_UPRISING. */
     GOVERNANCE_CRISIS,
-    /** Sharp spike followed by resolution — a confirmed fracture event (fork or coordinated
-     *  mass departure). Requires both a sustained cluster (>= [DetectorWeights.minFractureClusterSize]
-     *  weeks) AND adversarial comment signal above [DetectorWeights.minOccurredFactionSignal]
-     *  when faction signal data is available. The strongest claim the detector makes. */
-    FRACTURE_OCCURRED,
+    /** Sharp spike followed by resolution — a confirmed fork driven by internal faction war.
+     *  Adversarial review signal is measurably above baseline: contributor groups were actively
+     *  hostile to each other in the review stream before the split (e.g. TSC 2017, Valkey 2024,
+     *  RSALv2 2021, Docker Enterprise 2019). The strongest adversarial claim the detector makes.
+     *  Requires a sustained cluster (>= [DetectorWeights.minFractureClusterSize] weeks). */
+    FRACTURE_ADVERSARIAL_FORK,
+    /** Sharp spike followed by resolution — a confirmed community uprising against the project
+     *  steward. Review signal stays at or below baseline: contributors were unified against
+     *  external authority, not against each other (e.g. io.js 2015, LibreSSL 2014, neovim 2014).
+     *  Identified by below-baseline cooperation signal or re-escalation after brief resolution
+     *  (the fork crystallised; both sides restructuring produced the re-escalation).
+     *  Requires a sustained cluster (>= [DetectorWeights.minFractureClusterSize] weeks). */
+    FRACTURE_UPRISING,
     /** Gradual sustained elevation that resolved — coordinated faction-driven departure. */
     EXODUS,
 }
@@ -138,11 +152,9 @@ data class DepartedContributor(
  * An inferred exodus event detected from a step-change in weighted contributor activity.
  * [inferredDate] is the first window of the drop.
  * [dropFraction] is (massBefore - massAfter) / massBefore.
- * [totalProjectCentrality] is the sum of all contributor centrality scores in the analysis window.
- * [departureCentralityFraction] is sum(departed centrality) / totalProjectCentrality — normalises
- * the impact of the departure against the full historical contributor pool, so a 31% active-window
- * drop on a mature project with thousands of contributors reads differently than the same drop
- * on a small project where the departed contributors were half the ecosystem.
+ * [totalProjectCentrality] is the sum of centrality for contributors active within 6 months
+ * before the departure — contemporaneous, not all-time.
+ * [departureCentralityFraction] is sum(departed centrality) / totalProjectCentrality.
  */
 data class ExodusDetection(
     val inferredDate: Instant,
@@ -188,18 +200,29 @@ data class DetectorWeights(
     /** Minimum consecutive above-threshold windows to classify as GOVERNANCE_CRISIS.
      *  A shorter cluster demotes to STABLE. Must be >= minClusterSize. Default 5. */
     val minOccurredClusterSize: Int = 5,
-    /** Minimum consecutive above-threshold windows to classify as FRACTURE_OCCURRED.
-     *  Cases below this threshold demote to GOVERNANCE_CRISIS. Calibrated to the smallest
-     *  confirmed corpus fracture (nodejs io.js = 9 windows). Cases shorter than 9 weeks of
-     *  sustained tension are more likely restructuring or brief crises than fork-level events.
-     *  Must be >= minOccurredClusterSize. Default 9. */
+    /** Minimum consecutive above-threshold windows to classify as FRACTURE_ADVERSARIAL_FORK
+     *  or FRACTURE_UPRISING. Cases below this threshold demote to GOVERNANCE_CRISIS. Calibrated
+     *  to the smallest confirmed corpus fracture (nodejs io.js = 9 windows). Cases shorter than
+     *  9 weeks of sustained tension are more likely restructuring or brief crises than fork-level
+     *  events. Must be >= minOccurredClusterSize. Default 9. */
     val minFractureClusterSize: Int = 9,
-    /** Faction signal threshold for FRACTURE_OCCURRED. When faction signal data is available
-     *  (non-null) and this is > 0, at least one scored pair must exceed this value for the
-     *  adversarial comment signal to confirm a fracture. 0.0 = gate disabled (default, backward
-     *  compatible). The live pipeline sets this to ~0.35 to require observed nitpicky/hostile
-     *  review behaviour on top of the structural asymmetry. */
+    /** Absolute faction signal threshold (fallback when no per-window baseline is available).
+     *  When faction signal data is available (non-null) and this is > 0, at least one scored pair
+     *  must exceed this value to confirm FRACTURE_ADVERSARIAL_FORK. 0.0 = gate disabled.
+     *  When per-window [WindowedScore.windowFactionSignal] data is present, the relative signal
+     *  thresholds [minRelativeFactionSignal] / [uprisingRelativeSignal] take precedence. */
     val minOccurredFactionSignal: Double = 0.35,
+    /** Minimum relative faction signal (crisis window average − pre-cluster baseline average)
+     *  to confirm FRACTURE_ADVERSARIAL_FORK. A positive delta means adversarial pairs were
+     *  measurably worse than the project's own normal baseline. Requires per-window
+     *  [WindowedScore.windowFactionSignal] data; falls back to [minOccurredFactionSignal] if
+     *  not available. Default 0.10 — covers moby (+0.18) and TSC (+0.30). */
+    val minRelativeFactionSignal: Double = 0.10,
+    /** A relative faction signal below this magnitude (i.e. crisis is this many points BELOW
+     *  baseline) suggests contributors unified against the steward rather than each other —
+     *  the FRACTURE_UPRISING pattern. Expressed as a positive magnitude; the actual threshold
+     *  is negative (baseline − crisis > uprisingRelativeSignal). Default 0.05. */
+    val uprisingRelativeSignal: Double = 0.05,
     /** Only check this many afterCluster windows for a brief resolution dip. A dip months after
      *  the cluster ends (e.g. redis: first sub-0.40 dip is 5 months post-cluster) is a lull in
      *  sustained tension, not a brief post-fracture calm. Default 12 ≈ 3 months of 7-day steps.
@@ -209,6 +232,10 @@ data class DetectorWeights(
      *  0.10 = within 10% of the threshold value on either side.
      *  E.g. attritionCoreThreshold=12%: flags cases in [10.8%, 13.2%]. */
     val borderlineMargin: Double = 0.10,
+    /** Lookback window (months) for contemporaneous centrality denominator in exodus detection.
+     *  Contributors active within this many months before the departure count toward the
+     *  denominator; older contributors are excluded. Default 24. */
+    val activeCentralityMonths: Long = 12,
 )
 
 /**

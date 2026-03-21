@@ -23,21 +23,24 @@ import org.drivine.transaction.DrivineTransactional
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Component
 
-private val MERGE_REVIEW_EDGE = """
-    MERGE (reviewer:Contributor {login: ${'$'}reviewer, runId: ${'$'}runId})
-    MERGE (author:Contributor {login: ${'$'}author, runId: ${'$'}runId})
-    MERGE (reviewer)-[r:REVIEWED {repo: ${'$'}repo, timestamp: ${'$'}timestamp, runId: ${'$'}runId}]->(author)
-    SET r.state = ${'$'}state,
-        r.commentCount = ${'$'}commentCount,
-        r.weight = ${'$'}weight,
-        r.prNumber = ${'$'}prNumber,
-        r.hoursToFirstReview = ${'$'}hoursToFirstReview,
-        r.daysMergedAfterReview = ${'$'}daysMergedAfterReview
+private const val BATCH_SIZE = 1000
+
+private val MERGE_REVIEW_EDGES_BATCH = """
+    UNWIND ${'$'}rows AS row
+    MERGE (reviewer:Contributor {login: row.reviewer, runId: row.runId})
+    MERGE (author:Contributor {login: row.author, runId: row.runId})
+    MERGE (reviewer)-[r:REVIEWED {repo: row.repo, timestamp: row.timestamp, runId: row.runId}]->(author)
+    SET r.state = row.state,
+        r.commentCount = row.commentCount,
+        r.weight = row.weight,
+        r.prNumber = row.prNumber,
+        r.hoursToFirstReview = row.hoursToFirstReview,
+        r.daysMergedAfterReview = row.daysMergedAfterReview
 """.trimIndent()
 
 /**
  * Persists [ReviewEdge] data from GitHub into the Neo4j factions graph.
- * Uses MERGE so re-runs are idempotent.
+ * Uses UNWIND + MERGE so re-runs are idempotent and writes are batched.
  */
 @Component
 class GraphBuilder(
@@ -48,26 +51,28 @@ class GraphBuilder(
     @DrivineTransactional
     fun persist(edges: List<ReviewEdge>, runId: String) {
         logger.info("Persisting {} review edges to Neo4j (runId={})", edges.size, runId)
-        edges.forEach { edge ->
-            persistenceManager.execute(
-                QuerySpecification.withStatement(MERGE_REVIEW_EDGE)
-                    .bind(
-                        mapOf(
-                            "reviewer" to edge.reviewer,
-                            "author" to edge.author,
-                            "repo" to edge.repo,
-                            "timestamp" to edge.timestamp.toString(),
-                            "state" to edge.state.name,
-                            "commentCount" to edge.commentCount,
-                            "weight" to edge.weight,
-                            "prNumber" to edge.prNumber,
-                            "hoursToFirstReview" to edge.hoursToFirstReview,
-                            "daysMergedAfterReview" to edge.daysMergedAfterReview,
-                            "runId" to runId,
-                        )
-                    )
+        val rows = edges.map { edge ->
+            mapOf(
+                "reviewer" to edge.reviewer,
+                "author" to edge.author,
+                "repo" to edge.repo,
+                "timestamp" to edge.timestamp.toString(),
+                "state" to edge.state.name,
+                "commentCount" to edge.commentCount,
+                "weight" to edge.weight,
+                "prNumber" to edge.prNumber,
+                "hoursToFirstReview" to edge.hoursToFirstReview,
+                "daysMergedAfterReview" to edge.daysMergedAfterReview,
+                "runId" to runId,
             )
         }
-        logger.info("Persisted {} review edges", edges.size)
+        rows.chunked(BATCH_SIZE).forEachIndexed { i, chunk ->
+            persistenceManager.execute(
+                QuerySpecification.withStatement(MERGE_REVIEW_EDGES_BATCH)
+                    .bind(mapOf("rows" to chunk))
+            )
+            logger.debug("Persisted batch {}/{}", i + 1, (rows.size + BATCH_SIZE - 1) / BATCH_SIZE)
+        }
+        logger.info("Persisted {} review edges in {} batches", edges.size, (rows.size + BATCH_SIZE - 1) / BATCH_SIZE)
     }
 }

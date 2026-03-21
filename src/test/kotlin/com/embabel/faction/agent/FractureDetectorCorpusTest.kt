@@ -43,18 +43,18 @@ import java.time.Instant
  * ## Current corpus and ground truth
  * | Repo | Window | Expected | Ground truth source |
  * |------|--------|----------|---------------------|
- * | nodejs/node | 2013-06-01 → 2015-03-01 | FRACTURE_OCCURRED | io.js fork Jan 2015 |
+ * | nodejs/node | 2013-06-01 → 2015-03-01 | FRACTURE_ADVERSARIAL_FORK | io.js fork Jan 2015 (factionSignal=null → backward compat) |
  * | rust-lang/rust | 2020-01-01 → 2020-08-01 | FRACTURE_IMMINENT | Mozilla layoffs Aug 2020 (pre-event) |
  * | rust-lang/rust | 2020-01-01 → 2021-06-01 | ATTRITION | Mozilla layoffs — external forced departure, no fork |
- * | hashicorp/terraform | 2022-06-01 → 2024-06-01 | FRACTURE_OCCURRED | BSL licence change Aug 2023, OpenTofu fork Sep 2023. Corpus test passes factionSignal=null (gate bypassed). Live run with gate at 0.35 returns GOVERNANCE_CRISIS (factionSignal=0.14–0.17) — fork was license-driven not adversarial; both are correct in context. |
+ * | hashicorp/terraform | 2022-06-01 → 2024-06-01 | FRACTURE_ADVERSARIAL_FORK | BSL licence change Aug 2023, OpenTofu fork Sep 2023. Corpus test passes factionSignal=null (gate bypassed). Live run with gate at 0.35 returns GOVERNANCE_CRISIS (factionSignal=0.14–0.17) — fork was license-driven not adversarial; both are correct in context. |
  * | hashicorp/terraform | 2021-06-01 → 2022-05-01 | FRACTURE_IMMINENT | pre-BSL tension; rising at window end |
  * | babel/babel | 2018-01-01 → 2020-06-01 | EXODUS | Babel 7 release crunch Aug–Oct 2018; gradual resolution Dec 2018 |
  * | redis/redis | 2021-01-01 → 2023-12-01 | FRACTURE_IMMINENT | pre-Valkey tension; rising at window end |
- * | redis/redis | 2021-01-01 → 2024-09-01 | FRACTURE_OCCURRED | Valkey fork March 2024, 38% mass drop |
- * | nodejs/node | 2016-01-01 → 2017-12-01 | FRACTURE_OCCURRED | TSC exodus Oct–Nov 2017, 34% drop, 17.4% core impact |
+ * | redis/redis | 2021-01-01 → 2024-09-01 | FRACTURE_ADVERSARIAL_FORK | Valkey fork March 2024, 38% mass drop |
+ * | nodejs/node | 2016-01-01 → 2017-12-01 | FRACTURE_ADVERSARIAL_FORK | TSC exodus Oct–Nov 2017, 34% drop, 17.4% core impact |
  * | nodejs/node | 2018-01-01 → 2019-12-01 | EXODUS | Second-wave departure Dec 2017, 14% drop, 12.9% core impact |
- * | moby/moby | 2019-01-01 → 2021-06-01 | FRACTURE_OCCURRED | Docker Enterprise sold to Mirantis Nov 2019; core team departed Dec 2019; re-escalation 2020-2021 |
- * | redis/redis | 2020-01-01 → 2021-06-01 | FRACTURE_OCCURRED | RSALv2/SSPL licence change Mar 2021; contributor exodus May 2021 (itamarhaber et al.) — first redis fracture wave |
+ * | moby/moby | 2019-01-01 → 2021-06-01 | FRACTURE_ADVERSARIAL_FORK | Docker Enterprise sold to Mirantis Nov 2019; core team departed Dec 2019; re-escalation 2020-2021 |
+ * | redis/redis | 2020-01-01 → 2021-06-01 | FRACTURE_ADVERSARIAL_FORK | RSALv2/SSPL licence change Mar 2021; contributor exodus May 2021 (itamarhaber et al.) — first redis fracture wave |
  * | redis/redis | 2024-09-01 → 2026-03-08 | FRACTURE_IMMINENT | live case — UNRESOLVED RISING as of March 2026; sixth fracture wave; antirez present in minor community; predicted split Sep 2026 |
  *
  * ## Known weight sensitivities
@@ -64,7 +64,7 @@ import java.time.Instant
  *   Raising attritionCoreThreshold above 12.9% flips this to ATTRITION.
  *   Both cases correctly flag alternativePattern (2.5% and 7.5% from threshold respectively).
  * - sharpRiseDelta=0.38: redis delta=0.434 (14% above), babel delta=0.32 (16% below) — clear gap.
- *   Was 0.40; lowered to 0.38 so redis FRACTURE_OCCURRED sits outside the 10% borderline margin.
+ *   Was 0.40; lowered to 0.38 so redis FRACTURE_ADVERSARIAL_FORK sits outside the 10% borderline margin.
  * - terraform: sparse contributor pool produces 0.00/low asymmetry windows during quiet periods
  *   (holidays, summer lulls) — NOT genuine resolutions. Fixed by gating hadBriefResolution on
  *   edgeCount >= minResolutionWindowEdges. Terraform fixtures mark known sparse windows with
@@ -72,12 +72,12 @@ import java.time.Instant
  * - minClusterSize=3: cluster must span at least 3 consecutive windows before any non-STABLE
  *   classification is returned. Prevents isolated 1-2 window noisy spikes in small reviewer pools
  *   from triggering false positives.
- * - minFractureClusterSize=9: FRACTURE_OCCURRED requires a 9-window sustained cluster, calibrated
- *   to the smallest confirmed corpus fracture (nodejs io.js = 9 windows). Cases shorter than 9
- *   consecutive weeks of high asymmetry demote to GOVERNANCE_CRISIS. Events like terraform 2019
- *   (HashiCorp restructuring, no fork) and babel 2020 (brief internal crisis, healed within weeks)
- *   correctly land in GOVERNANCE_CRISIS rather than FRACTURE_OCCURRED under this threshold.
- *   All current FRACTURE_OCCURRED corpus cases have clusters well above 9 windows.
+ * - minFractureClusterSize=9: FRACTURE_ADVERSARIAL_FORK / FRACTURE_UPRISING require a 9-window
+ *   sustained cluster, calibrated to the smallest confirmed corpus fracture (nodejs io.js = 9 windows).
+ *   Cases shorter than 9 consecutive weeks of high asymmetry demote to GOVERNANCE_CRISIS. Events like
+ *   terraform 2019 (HashiCorp restructuring, no fork) and babel 2020 (brief internal crisis, healed
+ *   within weeks) correctly land in GOVERNANCE_CRISIS under this threshold.
+ *   All current confirmed-fracture corpus cases have clusters well above 9 windows.
  */
 class FractureDetectorCorpusTest {
 
@@ -111,7 +111,7 @@ class FractureDetectorCorpusTest {
 
     // -------------------------------------------------------------------------
     // nodejs/node  2013-06-01 → 2015-03-01
-    // Ground truth: io.js fork December 2014 / January 2015 — FRACTURE_OCCURRED
+    // Ground truth: io.js fork December 2014 / January 2015 — FRACTURE_ADVERSARIAL_FORK (factionSignal=null)
     // Source: https://nodejs.org/en/blog/announcements/foundation-v4-announce
     // -------------------------------------------------------------------------
     private val nodejsIoJsScores = listOf(
@@ -249,7 +249,7 @@ class FractureDetectorCorpusTest {
     // -------------------------------------------------------------------------
     // hashicorp/terraform  2022-06-01 → 2024-06-01
     // Ground truth: BSL licence change Aug 2023, OpenTofu fork Sep 2023 —
-    // FRACTURE_OCCURRED (algorithm detects Jun/Jul 2022 fracture event with
+    // FRACTURE_ADVERSARIAL_FORK (algorithm detects Jun/Jul 2022 fracture event with
     // re-escalation through BSL announcement; sparse graph produces 0.00 windows
     // during quiet periods — not genuine resolutions)
     // -------------------------------------------------------------------------
@@ -346,7 +346,7 @@ class FractureDetectorCorpusTest {
     // Ground truth: Babel 7 release crunch Aug–Oct 2018 produced extreme review asymmetry;
     // gradual resolution by December 2018 as the team regrouped. No adversarial faction formed —
     // contributors cycled out one by one over 2019-2020 (jridgewell being the highest-impact
-    // departure in Jun 2020). This is EXODUS, not FRACTURE_OCCURRED, because:
+    // departure in Jun 2020). This is EXODUS, not FRACTURE_ADVERSARIAL_FORK, because:
     //   - isSharpRise = false: pre-cluster mean ~0.68 (elevated throughout H1 2018 during
     //     Babel 7 RC work); peak 1.00 − 0.68 = 0.32 < sharpRiseDelta (0.38)
     //   - asymmetryDropped = true: post-cluster mean well below 0.60 threshold
@@ -647,7 +647,7 @@ class FractureDetectorCorpusTest {
 
     // -------------------------------------------------------------------------
     // redis/redis  2021-01-01 → 2024-09-01
-    // Ground truth: Valkey fork March 2024 — FRACTURE_OCCURRED
+    // Ground truth: Valkey fork March 2024 — FRACTURE_ADVERSARIAL_FORK
     // ExodusDetection: 9 contributors, 38% mass drop, 13.5% core impact (above attrition thresholds)
     // Source: Linux Foundation Valkey announcement March 20, 2024.
     // -------------------------------------------------------------------------
@@ -920,7 +920,7 @@ class FractureDetectorCorpusTest {
 
     // -------------------------------------------------------------------------
     // nodejs/node  2016-01-01 → 2017-12-01 (backfilled +6mo to 2015-07-05)
-    // Ground truth: TSC contributor exodus Oct–Nov 2017 — FRACTURE_OCCURRED.
+    // Ground truth: TSC contributor exodus Oct–Nov 2017 — FRACTURE_ADVERSARIAL_FORK.
     // Fishrock123 (James M Snell), mscdex (Brian White), trevnorris (Trevor Norris) and others
     // resigned from the TSC citing hostile governance environment. 34% mass drop, 17.4% core
     // impact — well above attrition thresholds. exodusAfterPeak (2017-11-06 after Oct 2016 peak)
@@ -1088,14 +1088,14 @@ class FractureDetectorCorpusTest {
     }
 
     @Test
-    fun `redis Valkey fork 2021-2024 gives FRACTURE_OCCURRED`() {
+    fun `redis Valkey fork 2021-2024 gives FRACTURE_ADVERSARIAL_FORK`() {
         val result = detector.detect(redisFractureScores, valKeyExodus)
-        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionPattern.FRACTURE_ADVERSARIAL_FORK, result.pattern)
         assertNull(result.alternativePattern, "Valkey fork is a clear fracture — delta 0.43 vs sharpRiseDelta 0.38 is >10% margin, should not flag nearly EXODUS")
     }
 
     // Score-only: FRACTURE_IMMINENT (extreme sustained tension, no baseline → can't confirm spike).
-    // Full detection (FRACTURE_OCCURRED) requires ExodusDetection — OpenTofu contributors
+    // Full detection (FRACTURE_ADVERSARIAL_FORK) requires ExodusDetection — OpenTofu contributors
     // stopping contributions to hashicorp/terraform is the resolution signal.
     @Test
     fun `terraform BSL licence change 2022-2024 gives FRACTURE_IMMINENT without exodus data`() {
@@ -1104,9 +1104,9 @@ class FractureDetectorCorpusTest {
     }
 
     @Test
-    fun `nodejs io-js fork 2014-2015 gives FRACTURE_OCCURRED`() {
+    fun `nodejs io-js fork 2014-2015 gives FRACTURE_ADVERSARIAL_FORK`() {
         val result = detector.detect(nodejsIoJsScores)
-        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionPattern.FRACTURE_ADVERSARIAL_FORK, result.pattern)
         assertNull(result.alternativePattern)
     }
 
@@ -1141,9 +1141,9 @@ class FractureDetectorCorpusTest {
     // fully cooled). exodusAfterPeak provides the resolution signal, isSharpRise=true (1.00−0.47=0.53
     // > sharpRiseDelta). departureCentralityFraction=17.4% > attritionCoreThreshold → not attrition.
     @Test
-    fun `nodejs TSC exodus 2017 gives FRACTURE_OCCURRED`() {
+    fun `nodejs TSC exodus 2017 gives FRACTURE_ADVERSARIAL_FORK`() {
         val result = detector.detect(nodejsTscExodusScores, nodejsTscExodus2017)
-        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionPattern.FRACTURE_ADVERSARIAL_FORK, result.pattern)
     }
 
     // -------------------------------------------------------------------------
@@ -1451,9 +1451,9 @@ class FractureDetectorCorpusTest {
     // No exodus — Docker Enterprise engineers departed gradually with no clean step-change.
     // Source: Mirantis Docker Enterprise acquisition Nov 2019.
     @Test
-    fun `moby Docker Enterprise sale 2019 gives FRACTURE_OCCURRED`() {
+    fun `moby Docker Enterprise sale 2019 gives FRACTURE_ADVERSARIAL_FORK`() {
         val result = detector.detect(mobyFractureScores)
-        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionPattern.FRACTURE_ADVERSARIAL_FORK, result.pattern)
         assertNull(result.alternativePattern)
     }
 
@@ -1462,7 +1462,7 @@ class FractureDetectorCorpusTest {
     // Ground truth: RSALv2/SSPL licence change March 2021 triggered contributor exodus May 2021.
     // itamarhaber, guybe7, soloestoy and others departed over commercialisation disagreement.
     // Window opens mid-tension (no baseline). Brief resolution Aug 2020 (antirez stepped back
-    // Jun 2020, tensions briefly eased). Re-escalation through RSALv2 → FRACTURE_OCCURRED.
+    // Jun 2020, tensions briefly eased). Re-escalation through RSALv2 → FRACTURE_ADVERSARIAL_FORK.
     // This is the first of two redis fracture waves; the second is the Valkey fork (2024).
     // hadBriefResolution fires via the 0.20 dip despite no beforeCluster (fallback path disabled —
     // exodusAfterPeak=true provides isResolved instead). isSharpRise uses afterCluster fallback.
@@ -1659,12 +1659,12 @@ class FractureDetectorCorpusTest {
 
     // Window opens mid-tension (no beforeCluster). exodusAfterPeak → isResolved=true.
     // isSharpRise uses afterCluster fallback (0.20 dip < briefResolutionThreshold). isReEscalating=true.
-    // 14.7% core impact > attritionCoreThreshold (12%) → not attrition → FRACTURE_OCCURRED.
+    // 14.7% core impact > attritionCoreThreshold (12%) → not attrition → FRACTURE_ADVERSARIAL_FORK.
     // First of two redis fracture waves; Valkey fork (2024) is the second.
     @Test
-    fun `redis RSALv2 licence wave 2020-2021 gives FRACTURE_OCCURRED`() {
+    fun `redis RSALv2 licence wave 2020-2021 gives FRACTURE_ADVERSARIAL_FORK`() {
         val result = detector.detect(redisFirstWaveScores, redisFirstWaveExodus)
-        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionPattern.FRACTURE_ADVERSARIAL_FORK, result.pattern)
         assertNull(result.alternativePattern)
     }
 }

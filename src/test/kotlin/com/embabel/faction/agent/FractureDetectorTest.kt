@@ -31,12 +31,13 @@ class FractureDetectorTest {
     private fun week(weeksAgo: Int): Instant =
         Instant.now().minus((weeksAgo * 7).toLong(), ChronoUnit.DAYS)
 
-    private fun score(asymmetry: Double, weeksAgo: Int, communities: Int = 3) = WindowedScore(
+    private fun score(asymmetry: Double, weeksAgo: Int, communities: Int = 3, edgeCount: Int = 0) = WindowedScore(
         windowStart = week(weeksAgo),
         windowEnd = week(weeksAgo).plus(30, ChronoUnit.DAYS),
         asymmetryRatio = asymmetry,
         connectedComponents = communities,
         modularity = asymmetry * 0.5,
+        edgeCount = edgeCount,
     )
 
     @Test
@@ -57,7 +58,7 @@ class FractureDetectorTest {
     @Test
     fun `sharp spike in past with drop after returns GOVERNANCE_CRISIS`() {
         // Low baseline → sharp spike (5 windows — below minFractureClusterSize=9) → drop → resolved.
-        // Short cluster and no faction signal → GOVERNANCE_CRISIS, not FRACTURE_OCCURRED.
+        // Short cluster and no faction signal → GOVERNANCE_CRISIS, not FRACTURE_ADVERSARIAL_FORK.
         val scores = listOf(
             score(0.2, 30), score(0.25, 28), score(0.2, 26),  // quiet baseline
             score(0.75, 22), score(0.8, 20), score(0.9, 18), score(1.0, 16), score(0.85, 14),  // spike (5 windows)
@@ -125,8 +126,8 @@ class FractureDetectorTest {
     }
 
     @Test
-    fun `9-window cluster with faction signal gives FRACTURE_OCCURRED`() {
-        // 9 consecutive elevated windows (floor for FRACTURE_OCCURRED) + faction signal provided.
+    fun `9-window cluster with faction signal gives FRACTURE_ADVERSARIAL_FORK`() {
+        // 9 consecutive elevated windows (floor for FRACTURE_ADVERSARIAL_FORK) + faction signal provided.
         val scores = listOf(
             score(0.2, 36), score(0.25, 34),                             // baseline
             score(0.6, 28), score(0.75, 26), score(0.9, 24),
@@ -135,14 +136,14 @@ class FractureDetectorTest {
             score(0.3, 6), score(0.2, 4), score(0.15, 2),               // resolved
         )
         val result = detector.detect(scores, factionSignal = 0.55)
-        assertEquals(TensionPattern.FRACTURE_OCCURRED, result.pattern)
+        assertEquals(TensionPattern.FRACTURE_ADVERSARIAL_FORK, result.pattern)
         assertEquals(TensionSeverity.EXTREME, result.severity)
         assertTrue(result.isResolved)
     }
 
     @Test
     fun `9-window cluster with low faction signal stays GOVERNANCE_CRISIS`() {
-        // Gate enabled at 0.35; factionSignal=0.20 (below threshold) → demotes FRACTURE_OCCURRED.
+        // Gate enabled at 0.35; factionSignal=0.20 (below threshold) → demotes FRACTURE_ADVERSARIAL_FORK.
         // Mirrors the live terraform BSL result: license-driven fork, no adversarial review signal.
         val weights = DetectorWeights(minOccurredFactionSignal = 0.35)
         val gated = FractureDetector(weights)
@@ -157,6 +158,28 @@ class FractureDetectorTest {
         assertEquals(TensionPattern.GOVERNANCE_CRISIS, result.pattern)
         assertEquals(TensionSeverity.EXTREME, result.severity)
         assertTrue(result.isResolved)
+    }
+
+    @Test
+    fun `governance-frustration fork with re-escalation gives FRACTURE_UPRISING despite low faction signal`() {
+        // io.js pattern: contributors aligned against external steward (Joyent), not each other.
+        // factionSignal is low (0.20) because there were no adversarial reviewer→author pairs —
+        // everyone agreed. But brief resolution (fork crystallises) followed by re-escalation
+        // (both sides restructuring) structurally confirms FRACTURE_UPRISING.
+        // Corporate departures (terraform BSL) resolve and go quiet — no re-escalation.
+        val scores = listOf(
+            score(0.2, 24), score(0.25, 22),                             // baseline
+            score(1.0, 18), score(0.82, 17), score(0.80, 16),
+            score(1.0, 15), score(0.80, 14), score(0.83, 13),
+            score(0.71, 12), score(0.65, 11), score(0.65, 10),              // 9-window cluster (0.47 below threshold)
+            score(0.33, 7, edgeCount = 10),                              // brief resolution (fork crystallises) — real activity, not a lull
+            score(0.67, 5),                                              // re-escalation (both sides restructuring)
+        )
+        val result = detector.detect(scores, factionSignal = 0.20)
+        assertEquals(TensionPattern.FRACTURE_UPRISING, result.pattern)
+        assertEquals(TensionSeverity.EXTREME, result.severity)
+        assertTrue(result.isResolved)
+        assertTrue(result.isReEscalating)
     }
 
     @Test

@@ -50,21 +50,20 @@ class GdsService(
     fun writeAnomalyScores(pairs: List<PairAnomaly>, runId: String) {
         if (pairs.isEmpty()) return
         logger.info("Writing anomaly scores for {} pairs (runId={})", pairs.size, runId)
-        pairs.forEach { pair ->
-            pm.execute(
-                QuerySpecification.withStatement(
-                    "MATCH (:Contributor {login: \$reviewer, runId: \$runId})" +
-                    "-[r:REVIEWED {runId: \$runId}]->" +
-                    "(:Contributor {login: \$author, runId: \$runId}) " +
-                    "SET r.anomalyScore = \$anomalyScore"
-                ).bind(mapOf(
-                    "reviewer" to pair.reviewer,
-                    "author" to pair.author,
-                    "runId" to runId,
-                    "anomalyScore" to pair.anomalyScore,
-                ))
-            )
-        }
+        val rows = pairs.map { mapOf(
+            "reviewer" to it.reviewer,
+            "author" to it.author,
+            "anomalyScore" to it.anomalyScore,
+        ) }
+        pm.execute(
+            QuerySpecification.withStatement(
+                "UNWIND \$rows AS row " +
+                "MATCH (:Contributor {login: row.reviewer, runId: \$runId})" +
+                "-[r:REVIEWED {runId: \$runId}]->" +
+                "(:Contributor {login: row.author, runId: \$runId}) " +
+                "SET r.anomalyScore = row.anomalyScore"
+            ).bind(mapOf("rows" to rows, "runId" to runId))
+        )
     }
 
     /**
@@ -75,21 +74,20 @@ class GdsService(
     fun writeFactionSignals(pairs: List<ScoredPair>, runId: String) {
         if (pairs.isEmpty()) return
         logger.info("Writing faction signals for {} pairs (runId={})", pairs.size, runId)
-        pairs.forEach { pair ->
-            pm.execute(
-                QuerySpecification.withStatement(
-                    "MATCH (:Contributor {login: \$reviewer, runId: \$runId})" +
-                    "-[r:REVIEWED {runId: \$runId}]->" +
-                    "(:Contributor {login: \$author, runId: \$runId}) " +
-                    "SET r.factionSignal = \$factionSignal"
-                ).bind(mapOf(
-                    "reviewer" to pair.reviewer,
-                    "author" to pair.author,
-                    "runId" to runId,
-                    "factionSignal" to pair.factionSignal,
-                ))
-            )
-        }
+        val rows = pairs.map { mapOf(
+            "reviewer" to it.reviewer,
+            "author" to it.author,
+            "factionSignal" to it.factionSignal,
+        ) }
+        pm.execute(
+            QuerySpecification.withStatement(
+                "UNWIND \$rows AS row " +
+                "MATCH (:Contributor {login: row.reviewer, runId: \$runId})" +
+                "-[r:REVIEWED {runId: \$runId}]->" +
+                "(:Contributor {login: row.author, runId: \$runId}) " +
+                "SET r.factionSignal = row.factionSignal"
+            ).bind(mapOf("rows" to rows, "runId" to runId))
+        )
     }
 
     /**
@@ -120,7 +118,8 @@ class GdsService(
         """.trimIndent()))
 
         val graphName = "faction-graph-$runId"
-        pm.execute(QuerySpecification.withStatement("CALL gds.graph.drop('$graphName', false)"))
+        pm.execute(QuerySpecification.withStatement(
+            "CALL gds.graph.drop('$graphName', false) YIELD graphName RETURN { graphName: graphName } AS result"))
         pm.execute(QuerySpecification.withStatement("""
             CALL gds.graph.project.cypher(
               '$graphName',
@@ -128,15 +127,16 @@ class GdsService(
               'MATCH (s:CoreContributor)-[r:REVIEWED]->(t:CoreContributor) WHERE r.runId = "$runId"
                RETURN id(s) AS source, id(t) AS target,
                       coalesce(r.factionSignal, r.anomalyScore, 1.0) AS weight'
-            )
+            ) YIELD graphName RETURN { graphName: graphName } AS result
         """.trimIndent()))
         pm.execute(QuerySpecification.withStatement("""
             CALL gds.louvain.write('$graphName', {
               writeProperty: 'communityId',
               relationshipWeightProperty: 'weight'
-            })
+            }) YIELD communityCount RETURN { communityCount: communityCount } AS result
         """.trimIndent()))
-        pm.execute(QuerySpecification.withStatement("CALL gds.graph.drop('$graphName')"))
+        pm.execute(QuerySpecification.withStatement(
+            "CALL gds.graph.drop('$graphName') YIELD graphName RETURN { graphName: graphName } AS result"))
 
         // Remove temporary label
         pm.execute(QuerySpecification.withStatement("""

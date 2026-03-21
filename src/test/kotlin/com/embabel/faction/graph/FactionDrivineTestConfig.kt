@@ -23,8 +23,8 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
 import org.springframework.context.ApplicationContextInitializer
 import org.springframework.context.ConfigurableApplicationContext
+import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
-import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.EnableAspectJAutoProxy
 import org.springframework.core.env.MapPropertySource
 import org.testcontainers.containers.Neo4jContainer
@@ -70,7 +70,7 @@ class FactionNeo4jInitializer : ApplicationContextInitializer<ConfigurableApplic
  * Minimal Drivine configuration for faction graph integration tests.
  * Use [FactionNeo4jInitializer] to supply datasource properties.
  */
-@Configuration
+@TestConfiguration
 @EnableDrivine
 @EnableDrivineTestConfig
 @EnableAspectJAutoProxy(proxyTargetClass = true)

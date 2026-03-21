@@ -63,6 +63,8 @@ data class GitHubReviewComment(
     @JsonProperty("diff_hunk") val diffHunk: String,
     @JsonProperty("pull_request_review_id") val reviewId: Long?,
     @JsonProperty("created_at") val createdAt: String? = null,
+    /** Non-null when this comment is a reply in a review thread. Points to the root or immediate parent. */
+    @JsonProperty("in_reply_to_id") val inReplyToId: Long? = null,
 )
 
 /** Increment when the edge schema or filtering logic changes — invalidates all prior edge caches. */

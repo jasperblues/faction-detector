@@ -115,12 +115,14 @@ data class ScoredComment(
  *
  * Range 0–1; higher values indicate stronger faction behaviour.
  */
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
 data class ScoredPair(
     val reviewer: String,
     val author: String,
     val anomalyScore: Double,
     val scoredComments: List<ScoredComment>,
 ) {
+    @get:com.fasterxml.jackson.annotation.JsonIgnore
     val factionSignal: Double get() {
         if (scoredComments.isEmpty()) return 0.0
         val nitpickyCount = scoredComments.count { it.significance == CommentSignificance.NITPICKY }

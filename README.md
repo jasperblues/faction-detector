@@ -26,14 +26,15 @@ Built with [Embabel](https://github.com/embabel/embabel-agent) + Spring Boot + N
 
 | Pattern | Description |
 |---------|-------------|
-| `FRACTURE_OCCURRED` | Confirmed fork or coordinated adversarial departure: 9+ weeks of sustained high asymmetry AND adversarial comment signal. The strongest claim the tool makes. |
+| `FRACTURE_ADVERSARIAL_FORK` | Internal faction war: 9+ weeks of sustained high asymmetry AND adversarial comment signal above baseline. The strongest claim the tool makes. |
+| `FRACTURE_UPRISING` | Community unified against an external steward: 9+ weeks of high asymmetry, but low faction signal (contributors were aligned, not fighting each other) plus post-resolution re-escalation. |
 | `GOVERNANCE_CRISIS` | Real structural disruption visible in the review graph — organisational restructuring, corporate withdrawal, or brief crisis — but without fork-level evidence. |
 | `FRACTURE_IMMINENT` | Peak is current and unresolved — split may be imminent |
 | `EXODUS` | Gradual sustained elevation that resolved — coordinated departure without adversarial spike |
 | `ATTRITION` | Natural contributor lifecycle turnover — succession problem, not faction problem |
 | `STABLE` | No significant asymmetry detected |
 
-> **Minimum data requirement:** 4 months (120 days) of PR review history. A confirmed fork pattern (`FRACTURE_OCCURRED`) requires 9 consecutive weeks of elevated asymmetry plus pre- and post-cluster context — roughly 16 rolling windows.
+> **Minimum data requirement:** 4 months (120 days) of PR review history. A confirmed fork pattern requires 9 consecutive weeks of elevated asymmetry plus pre- and post-cluster context — roughly 16 rolling windows.
 
 ---
 
@@ -44,20 +45,15 @@ faction-detector:> analyse --repo nodejs/node --since 2013-06-01 --until 2015-06
 ```
 
 ```
-+----------------+---------------------------------------------------------------------------------+
-| Pattern        | FRACTURE_OCCURRED                                                               |
-| Severity       | EXTREME                                                                         |
-| Confidence     | 80%                                                                             |
-| Peak tension   | 2014-12-10 (asymmetry 1.00)                                                     |
-| Status         | RESOLVED                                                                        |
-| Fracture event | 2015-05-29                                                                      |
-| Resolution     | 2015-01-24                                                                      |
-| Exodus date    | 2015-05-29                                                                      |
-| Mass drop      | 46%  (673.0 → 366.3)                                                            |
-| Split ratio    | 46:54  — near-equal split, departing faction was viable                         |
-| Core impact    | 11.7% of total project centrality                                               |
-| Departed       | piscisaureus(42)  chrisdickinson(27)  brendanashworth(8)  mscdex(8)  domenic(7) |
-+----------------+---------------------------------------------------------------------------------+
++----------------+-----------------------------------+
+| Pattern        | FRACTURE_ADVERSARIAL_FORK         |
+| Severity       | EXTREME                           |
+| Confidence     | 75%                               |
+| Peak tension   | 2014-12-10 (asymmetry 1.00)       |
+| Status         | RESOLVED — RE-ESCALATION DETECTED |
+| Fracture event | 2015-01-17                        |
+| Resolution     | 2015-01-24                        |
++----------------+-----------------------------------+
 ```
 
 The io.js fork was announced December 9, 2014. The review graph peaked **November 15** — 3 weeks earlier. The model found the right people, the right month, the right severity from review patterns alone. No commit messages. No mailing lists. No drama threads.
@@ -69,6 +65,7 @@ The io.js fork was announced December 9, 2014. The review graph peaked **Novembe
 - **Minimum project size**: Results are unreliable for projects with fewer than ~5 active reviewers in a given window. When only 2–3 people are reviewing, asymmetry scores collapse to binary 0/1 noise — the metric requires a real reviewer graph to be meaningful. Projects in managed decline (e.g. a framework superseded by its own successor) often fall below this threshold and can produce spurious FRACTURE_IMMINENT readings.
 - **GitHub PR reviews only**: The tool only sees review activity on GitHub pull requests. Projects that use email, Gerrit, Phabricator, or bot-mediated approvals will appear to have little or no data.
 - **Review asymmetry ≠ conflict**: High asymmetry can reflect structural specialisation (separate frontend/backend teams) as well as adversarial dynamics. The LLM narrative attempts to distinguish these, but treat results as signals to investigate, not verdicts.
+- **Comment scoring model**: Stage-2 comment scoring uses `claude-haiku-4-5` by default for speed and cost. Haiku tends to classify ambiguous comments as `FAIR` rather than `NITPICKY`, which slightly suppresses faction signals on marginal cases. To use a more nuanced model, change `AnthropicModels.CLAUDE_HAIKU_4_5` to `AnthropicModels.CLAUDE_SONNET_4_5` in `ReviewCommentScorer.kt` and bump `COMMENT_SCORE_CACHE_VERSION` to invalidate cached scores. Note that if you tune `DetectorWeights` to compensate for Haiku's FAIR bias, those weights will not transfer correctly to Sonnet.
 - **Bot accounts**: Accounts matching common bot patterns (`[bot]`, `-bot`) are filtered automatically. Project-specific automation accounts (e.g. `elasticmachine`) are not. If the narrative mentions a bot or automation account as a significant reviewer or bridge figure, re-run with the `--bots` flag to exclude it:
   ```
   analyse --repo elastic/elasticsearch --since 2020-01-01 --bots elasticmachine,merge-bot

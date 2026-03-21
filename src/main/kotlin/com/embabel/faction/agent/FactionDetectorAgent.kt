@@ -57,7 +57,11 @@ internal fun parseAnalysisInput(input: String): AnalysisRequest {
     val botsMatch = Regex("""--bots=(\S+)""").find(trimmed)
     val excludeBots = botsMatch?.groupValues?.get(1)
         ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
-    val positional = trimmed.replace(botsMatch?.value ?: "", "").trim()
+    val skipNarrative = trimmed.contains("--no-narrative")
+    val positional = trimmed
+        .replace(botsMatch?.value ?: "", "")
+        .replace("--no-narrative", "")
+        .trim()
 
     val parts = positional.split("\\s+".toRegex())
     val repoParts = parts[0].split("/")
@@ -77,7 +81,7 @@ internal fun parseAnalysisInput(input: String): AnalysisRequest {
         until = null
     }
 
-    return AnalysisRequest(owner = owner, repo = repo, since = since, until = until, excludeBots = excludeBots)
+    return AnalysisRequest(owner = owner, repo = repo, since = since, until = until, excludeBots = excludeBots, skipNarrative = skipNarrative)
 }
 
 /**
@@ -93,6 +97,8 @@ data class AnalysisRequest(
     val runId: String = java.util.UUID.randomUUID().toString().take(8),
     /** Additional bot/automation account logins to exclude beyond the default pattern filter. */
     val excludeBots: Set<String> = emptySet(),
+    /** Skip LLM narrative generation — structural analysis still runs. */
+    val skipNarrative: Boolean = false,
 )
 
 /**
@@ -217,6 +223,7 @@ class FactionDetectorAgent(
             edges = edges,
             runId = request.runId,
             excludeBots = request.excludeBots,
+            skipNarrative = request.skipNarrative,
         )
     }
 
@@ -228,22 +235,39 @@ class FactionDetectorAgent(
                 repo = fetch.repo.substringAfter("/"),
                 flaggedPairs = fetch.flaggedPairs,
                 recentPrNumbers = fetch.recentPrNumbers,
+                since = fetch.since,
+                until = fetch.until,
                 context = context,
             )
         } else emptyList()
         gdsService.writeFactionSignals(scoredPairs, fetch.runId)
         gdsService.runLouvain(fetch.runId)
         val communityAssignments = gdsService.queryCommunities(fetch.runId)
+
+        // Populate per-window average faction signal for relative signal computation in FractureDetector.
+        // For each window, find the scored pairs whose review edges fall in that window and average
+        // their factionSignal. Null when no scored pairs were active in that window.
+        val factionSignalByPair = scoredPairs.associate { (it.reviewer to it.author) to it.factionSignal }
+        val windowedScoresWithSignal = fetch.windowedScores.map { window ->
+            val activePairs = fetch.edges
+                .filter { it.timestamp >= window.windowStart && it.timestamp < window.windowEnd }
+                .map { it.reviewer to it.author }
+                .toSet()
+            val signals = activePairs.mapNotNull { factionSignalByPair[it] }
+            window.copy(windowFactionSignal = if (signals.isEmpty()) null else signals.average())
+        }
+
         return WindowedScores(
             repo = fetch.repo,
             since = fetch.since,
             until = fetch.until,
-            scores = fetch.windowedScores,
+            scores = windowedScoresWithSignal,
             scoredPairs = scoredPairs,
             communityAssignments = communityAssignments,
             edges = fetch.edges,
             runId = fetch.runId,
             excludeBots = fetch.excludeBots,
+            skipNarrative = fetch.skipNarrative,
         )
     }
 
@@ -285,8 +309,7 @@ class FactionDetectorAgent(
         var backfilled = false
 
         var exodus = exodusDetector.detect(allEdges, windowed.until)
-        val maxFactionSignal = windowed.scoredPairs.map { it.factionSignal }.maxOrNull()
-        var fracture = fractureDetector.detect(scores, exodus, maxFactionSignal)
+        var fracture = fractureDetector.detect(scores, exodus)
 
         // Backfill: if we classified EXODUS with a confirmed departure but the window opens
         // mid-tension (first 8 windows already elevated), fetch 6 months prior to find the
@@ -307,7 +330,7 @@ class FactionDetectorAgent(
                 allEdges = backfillEdges + allEdges
                 scores = asymmetryScorer.score(allEdges, backfillSince, until = windowed.until)
                 exodus = exodusDetector.detect(allEdges, windowed.until)
-                fracture = fractureDetector.detect(scores, exodus, maxFactionSignal)
+                fracture = fractureDetector.detect(scores, exodus)
                 backfilled = true
             }
         }
@@ -473,7 +496,7 @@ class FactionDetectorAgent(
             else -> "Very low confidence — do NOT use alarming language or make definitive claims. Describe what the data shows structurally, note multiple alternative explanations, and recommend monitoring rather than intervention."
         }
 
-        val narrative = context.ai().withAutoLlm().generateText(
+        val narrative = if (windowed.skipNarrative) "[narrative skipped]" else context.ai().withAutoLlm().generateText(
             """
             You are an expert in open-source community dynamics.
             Analyse the following contributor faction data for ${windowed.repo}.
@@ -495,12 +518,15 @@ class FactionDetectorAgent(
             1. ${when (fracture.pattern) {
                 TensionPattern.ATTRITION -> "Who left and why — frame as natural contributor lifecycle, not faction conflict. Reference specific contributors and their likely motivations."
                 TensionPattern.FRACTURE_LIKELY -> "What early warning signals are present — which contributor groupings are showing divergence and why. Frame this as a preventable escalation, not a foregone conclusion."
+                TensionPattern.FRACTURE_ADVERSARIAL_FORK -> "What internal factions formed and why — which contributor groups were in conflict, what drove the adversarial review dynamics, and who were the key figures on each side."
+                TensionPattern.FRACTURE_UPRISING -> "What drove the community to unify against the project steward — which governance or stewardship failures provoked the uprising, which contributors led it, and what outcome the unified community sought."
                 else -> "What factions formed and why — or what is currently building — referencing specific contributors and community groupings"
             }}
             2. Risk level consistent with the fracture pattern AND the confidence score above
             3. ${when {
                 fracture.pattern == TensionPattern.ATTRITION -> "Concrete succession planning and knowledge transfer recommendations. Do NOT suggest governance intervention or frame this as a political conflict."
                 fracture.pattern == TensionPattern.FRACTURE_LIKELY -> "Concrete early interventions for maintainers — what governance or process changes could prevent this from escalating to a full fracture."
+                fracture.pattern == TensionPattern.FRACTURE_UPRISING -> "What the uprising achieved (or failed to achieve) and what it reveals about the stewardship model — was the community's grievance legitimate? Did the fork improve or fragment the ecosystem?"
                 fracture.isReEscalating -> "A fracture event occurred within this window followed by renewed tension — describe both the original event and what is driving the re-escalation."
                 fracture.isResolved -> "What this historical event tells us about the project's trajectory and what resolved it."
                 else -> "Recommendations for maintainers to de-escalate"
@@ -537,14 +563,17 @@ class FactionDetectorAgent(
         val communitySignal = exodus?.dropFraction ?: crossCommunityScore
         val base = fracture.peakAsymmetry * 0.5 + communitySignal * 0.3 + avgFactionSignal * 0.2
         return when (fracture.pattern) {
-            TensionPattern.FRACTURE_OCCURRED -> {
-                // Fracture confirmed — evidence clarity drives confidence, not whether exodus
-                // was captured in the analysis window (may fall just outside it).
-                // Governance fractures (e.g. io.js) show low faction signal because teams are
-                // technically aligned; penalising for that gives low confidence on clear true positives.
-                // Peak asymmetry is the primary evidence; exodus scale adds corroboration.
+            TensionPattern.FRACTURE_ADVERSARIAL_FORK -> {
+                // Adversarial fracture confirmed — peak asymmetry and exodus scale drive confidence.
                 val exodusBonus = (exodus?.dropFraction ?: 0.0) * 0.20
                 (fracture.peakAsymmetry * 0.65 + exodusBonus + 0.10).coerceIn(0.0, 1.0)
+            }
+            TensionPattern.FRACTURE_UPRISING -> {
+                // Uprising confirmed — structural evidence (re-escalation or below-baseline signal)
+                // plus peak asymmetry. Slightly lower base than adversarial fork since the signal
+                // is harder to measure (absence of adversarial pairs, not presence).
+                val exodusBonus = (exodus?.dropFraction ?: 0.0) * 0.15
+                (fracture.peakAsymmetry * 0.60 + exodusBonus + 0.10).coerceIn(0.0, 1.0)
             }
             TensionPattern.EXODUS -> {
                 // Large projects always have contributors leaving for normal reasons (new jobs, burnout).
@@ -614,6 +643,7 @@ data class FetchResult(
     val edges: List<ReviewEdge>,
     val runId: String,
     val excludeBots: Set<String> = emptySet(),
+    val skipNarrative: Boolean = false,
 )
 
 /** Intermediate domain object carrying windowed scores, LLM-scored pairs, and GDS community assignments. */
@@ -628,4 +658,5 @@ data class WindowedScores(
     val edges: List<ReviewEdge> = emptyList(),
     val runId: String,
     val excludeBots: Set<String> = emptySet(),
+    val skipNarrative: Boolean = false,
 )
