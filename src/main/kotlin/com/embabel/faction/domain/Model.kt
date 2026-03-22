@@ -169,6 +169,20 @@ data class ExodusDetection(
 /**
  * Tunable thresholds for fracture detection.
  * Externalised so tests can vary weights without recompiling.
+ *
+ * ## ML future directions
+ * These weights form an ~18-dimensional vector that is currently hand-tuned against the
+ * corpus in [com.embabel.faction.agent.FractureDetectorCorpusTest]. As the corpus grows,
+ * automated approaches become viable:
+ * - **Bayesian optimisation**: Gaussian process over weight space, each corpus case is a
+ *   constraint. Handles the small-corpus regime well (sample-efficient).
+ * - **Differentiable classification**: replace hard threshold comparisons with soft sigmoids,
+ *   define cross-entropy loss over corpus labels, gradient-descend the weight vector.
+ * - **Genetic / evolutionary search**: evolve weight vectors with fitness = corpus accuracy.
+ *   Simple to implement; tolerates non-differentiable decision logic.
+ *
+ * Key risk is overfitting (12 cases vs 18 weights). Mitigations: leave-one-out CV,
+ * regularisation toward current defaults, or Bayesian priors centred on hand-tuned values.
  */
 data class DetectorWeights(
     /** Asymmetry must exceed this to be considered a tension event. */

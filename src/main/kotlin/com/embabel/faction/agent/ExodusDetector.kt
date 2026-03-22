@@ -25,15 +25,16 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 
 /**
- * Detects coordinated contributor departures by finding step-changes in the
- * centrality-weighted active contributor mass across rolling windows.
+ * Detects coordinated contributor departures by finding step-changes in
+ * window-local activity (edge counts) across rolling windows.
  *
  * Normal churn is gradual; a coordinated exodus produces a step-change — multiple
  * established contributors going silent within the same short window.
  *
- * Centrality is measured as total review degree (edges given + received) across the
- * full analysis period, so departing core reviewers are weighted more heavily than
- * peripheral contributors.
+ * Window mass = sum of edges per contributor in that window (not all-time centrality),
+ * so a contributor doing 1 review counts as 1, not their career total.
+ * All-time centrality is still used to filter drive-by contributors and to rank
+ * departed contributors by historical importance in the report.
  */
 @Component
 class ExodusDetector(private val weights: DetectorWeights = DetectorWeights()) {
@@ -146,12 +147,17 @@ class ExodusDetector(private val weights: DetectorWeights = DetectorWeights()) {
         var start = since
         while (start.isBefore(until)) {
             val end = start.plus(WINDOW_DAYS, ChronoUnit.DAYS)
-            val active = edges
-                .filter { it.timestamp >= start && it.timestamp < end }
-                .flatMap { listOf(it.reviewer, it.author) }
+            val windowEdges = edges.filter { it.timestamp >= start && it.timestamp < end }
+            // Count edges per contributor in this window (window-local activity)
+            val edgeCounts = mutableMapOf<String, Double>()
+            windowEdges.forEach { e ->
+                edgeCounts[e.reviewer] = (edgeCounts[e.reviewer] ?: 0.0) + 1.0
+                edgeCounts[e.author] = (edgeCounts[e.author] ?: 0.0) + 1.0
+            }
+            val active = edgeCounts.keys
                 .filter { (centrality[it] ?: 0.0) >= MIN_CENTRALITY }
                 .toSet()
-            val mass = active.sumOf { centrality[it] ?: 0.0 }
+            val mass = active.sumOf { edgeCounts[it] ?: 0.0 }
             windows.add(Window(start, active, mass))
             start = start.plus(STEP_DAYS, ChronoUnit.DAYS)
         }

@@ -56,8 +56,6 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
         // sustained cluster exists elsewhere in the series. A brief initial spike followed by a
         // brief dip and then a long re-escalation (e.g. a holiday lull between two tension waves)
         // should classify on the dominant sustained period, not the small initial burst.
-        // We only fall back when the peak cluster is below minOccurredClusterSize — clusters large
-        // enough to yield GOVERNANCE_CRISIS or better are kept as-is.
         val cluster = if (peakCluster.size < weights.minOccurredClusterSize) {
             findAllClusters(scores)
                 .filter { it !== peakCluster && it.size >= weights.minClusterSize }
@@ -147,19 +145,25 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
         // null → GOVERNANCE_CRISIS (not enough evidence to confirm a fork-level event).
         // factionSignal == null → gate bypassed (backward compat) → default to adversarial.
         val fractureType: TensionPattern? = when {
-            factionSignal == null -> TensionPattern.FRACTURE_ADVERSARIAL_FORK
-            // Relative signal takes precedence when a baseline is available
+            // Relative signal takes precedence when per-window data is available — this is the
+            // most authoritative signal because it compares crisis to the project's own baseline.
             relativeFactionSignal != null && relativeFactionSignal > weights.minRelativeFactionSignal ->
                 TensionPattern.FRACTURE_ADVERSARIAL_FORK
             relativeFactionSignal != null && relativeFactionSignal < -weights.uprisingRelativeSignal ->
                 TensionPattern.FRACTURE_UPRISING
-            // Structural uprising confirmation: re-escalation after brief resolution with low signal.
-            // The fork crystallised (brief calm), both sides restructured (re-escalation).
-            // Corporate/strategic departures (terraform BSL) resolve and go quiet — no re-escalation.
-            hadBriefResolution && isReEscalating -> TensionPattern.FRACTURE_UPRISING
+            // Structural uprising confirmation: per-window signal data is available but ambiguous
+            // (not clearly adversarial), and re-escalation after brief resolution suggests the fork
+            // crystallised (brief calm) then both sides restructured (re-escalation).
+            // Requires relativeFactionSignal data — without it we can't distinguish uprising from
+            // adversarial fork and should fall back to backward compat.
+            relativeFactionSignal != null && hadBriefResolution && isReEscalating ->
+                TensionPattern.FRACTURE_UPRISING
+            // Backward compat: no faction signal data, or ambiguous relative signal with no
+            // absolute signal to break the tie → default to adversarial.
+            factionSignal == null -> TensionPattern.FRACTURE_ADVERSARIAL_FORK
             // Absolute signal fallback when no per-window baseline is available
             weights.minOccurredFactionSignal <= 0.0 -> TensionPattern.FRACTURE_ADVERSARIAL_FORK
-            factionSignal >= weights.minOccurredFactionSignal -> TensionPattern.FRACTURE_ADVERSARIAL_FORK
+            factionSignal != null && factionSignal >= weights.minOccurredFactionSignal -> TensionPattern.FRACTURE_ADVERSARIAL_FORK
             else -> null
         }
 
@@ -182,7 +186,29 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
             || rawPattern == TensionPattern.FRACTURE_UPRISING
         val pattern = when {
             isFracture && cluster.size < weights.minFractureClusterSize ->
-                if (cluster.size >= weights.minOccurredClusterSize) TensionPattern.GOVERNANCE_CRISIS
+                // Re-escalation override: if the initial fracture was too short for confirmation
+                // but tension re-escalated, the original resolution is moot — the fracture is
+                // ongoing. Use post-cluster faction signal as reference to distinguish uprising
+                // (crisis signal below post-cluster baseline — community unified against steward)
+                // from generic imminent fracture. This fallback baseline is only used here in
+                // the demotion context, not for primary classification, to avoid sampling bias
+                // when adversarial members depart (post-departure rump has different signal profile).
+                if (isReEscalating) {
+                    val overrideSignal = relativeFactionSignal ?: run {
+                        val postBaseline = afterCluster
+                            .mapNotNull { it.windowFactionSignal }.average().takeIf { !it.isNaN() }
+                        if (postBaseline != null && crisisFactionSignal != null)
+                            crisisFactionSignal - postBaseline else null
+                    }
+                    // In the demotion context, structural evidence (re-escalation) is already
+                    // strong — any negative signal (crisis below post-cluster baseline) is
+                    // sufficient to confirm uprising. The primary gate's stricter threshold
+                    // applies to the main classification path.
+                    if (overrideSignal != null && overrideSignal < 0)
+                        TensionPattern.FRACTURE_UPRISING
+                    else TensionPattern.FRACTURE_IMMINENT
+                }
+                else if (cluster.size >= weights.minOccurredClusterSize) TensionPattern.GOVERNANCE_CRISIS
                 else TensionPattern.STABLE
             rawPattern == TensionPattern.GOVERNANCE_CRISIS && cluster.size < weights.minOccurredClusterSize ->
                 TensionPattern.STABLE
@@ -277,12 +303,12 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
     /**
      * Returns true when an exodus looks like natural contributor lifecycle turnover rather than
      * a coordinated faction departure. Both conditions must hold:
-     * - Core impact is small (< 12% of total project centrality) — not load-bearing contributors.
-     * - Active-window mass drop is modest (< 33%) — no mass coordinated exit.
+     * - Core impact is small (<= 12% of total project centrality) — not load-bearing contributors.
+     * - Active-window mass drop is modest (<= 33%) — no mass coordinated exit.
      */
     private fun isAttrition(exodus: ExodusDetection): Boolean =
-        exodus.departureCentralityFraction < weights.attritionCoreThreshold &&
-            exodus.dropFraction < weights.attritionDropThreshold
+        exodus.departureCentralityFraction <= weights.attritionCoreThreshold &&
+            exodus.dropFraction <= weights.attritionDropThreshold
 
     /**
      * Returns the pattern this result nearly was, when the decisive threshold was within

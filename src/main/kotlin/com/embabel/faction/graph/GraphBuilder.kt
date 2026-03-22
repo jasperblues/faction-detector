@@ -16,6 +16,7 @@
 package com.embabel.faction.graph
 
 import com.embabel.faction.domain.ReviewEdge
+import jakarta.annotation.PostConstruct
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
@@ -47,6 +48,16 @@ class GraphBuilder(
     @param:Qualifier("factionsManager") private val persistenceManager: PersistenceManager,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+
+    @PostConstruct
+    fun ensureIndexes() {
+        persistenceManager.execute(
+            QuerySpecification.withStatement(
+                "CREATE INDEX contributor_lookup IF NOT EXISTS FOR (n:Contributor) ON (n.login, n.runId)"
+            )
+        )
+        logger.info("Ensured Contributor(login, runId) composite index")
+    }
 
     @DrivineTransactional
     fun persist(edges: List<ReviewEdge>, runId: String) {
