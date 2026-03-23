@@ -249,7 +249,9 @@ class FactionDetectorAgent(
         // LLM scoring and Neo4j community detection entirely.
         snapshotCache.load(fetch.repo, fetch.since, fetch.until)?.let { snapshot ->
             logger.info("Using snapshot for {} — skipping LLM scoring and Neo4j", fetch.repo)
-            return snapshot
+            // Restore presentation flags from the current request — snapshots capture
+            // data, not flags like skipNarrative which may differ between test and CLI runs.
+            return snapshot.copy(skipNarrative = fetch.skipNarrative, runId = fetch.runId)
         }
 
         val scoredPairs = if (fetch.flaggedPairs.isNotEmpty()) {

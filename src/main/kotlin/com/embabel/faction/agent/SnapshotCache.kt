@@ -70,6 +70,11 @@ class SnapshotCache {
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
+    /** When true, load() returns snapshots from classpath/cache. When false (local dev),
+     *  load() always returns null — forcing a full pipeline run and fresh snapshot save.
+     *  GitHub Actions sets CI=true by default. */
+    val ciMode: Boolean = System.getenv("CI") != null
+
     private val cacheDir: Path = Path.of(System.getProperty("user.home"), ".faction-cache", "snapshots")
         .also { it.createDirectories() }
 
@@ -84,7 +89,13 @@ class SnapshotCache {
     fun load(repo: String, since: Instant, until: Instant?): WindowedScores? {
         val key = cacheKey(repo, since, until)
 
-        // Check classpath (committed snapshots for CI)
+        if (!ciMode) {
+            // Local dev: always miss — force full pipeline run and fresh snapshot save.
+            logger.info("Snapshot skip (local mode): {}", key)
+            return null
+        }
+
+        // CI: check classpath (committed snapshots)
         val classpathResource = javaClass.getResourceAsStream("/snapshots/$key")
         if (classpathResource != null) {
             logger.info("Snapshot classpath hit: {}", key)
@@ -93,30 +104,45 @@ class SnapshotCache {
             }
         }
 
-        // Check local cache
-        val localFile = cacheDir.resolve(key)
-        if (localFile.exists()) {
-            logger.info("Snapshot cache hit: {}", key)
-            return mapper.readValue<WindowedScores>(ungzip(localFile.readBytes()))
-        }
-
         logger.info("Snapshot cache miss: {}", key)
         return null
     }
 
     /**
-     * Saves a snapshot to the local cache. Does NOT write to classpath resources —
-     * those are committed manually (or via a build task) after local validation.
+     * Saves a snapshot to both the local cache and the test resources directory
+     * (for CI). The test resources copy is what gets committed to source control.
      */
     fun save(scores: WindowedScores) {
         val key = cacheKey(scores.repo, scores.since, scores.until)
+        val compressed = gzip(mapper.writeValueAsBytes(scores))
+
+        // Local cache
         val localFile = cacheDir.resolve(key)
-        val json = mapper.writeValueAsBytes(scores)
-        localFile.writeBytes(gzip(json))
-        val compressedSize = localFile.toFile().length()
-        val pct = if (json.isNotEmpty()) "%.0f".format((1.0 - compressedSize.toDouble() / json.size) * 100) else "0"
-        logger.info("Snapshot saved: {} ({} bytes JSON → {} bytes gzipped, {}% compression)",
-            key, json.size, compressedSize, pct)
+        localFile.writeBytes(compressed)
+
+        // Test resources — so `git add` picks them up for CI
+        val resourceDir = findTestResourcesDir()
+        if (resourceDir != null) {
+            val resourceFile = resourceDir.resolve(key)
+            resourceFile.writeBytes(compressed)
+            logger.info("Snapshot saved: {} ({} bytes gzipped) → cache + test resources", key, compressed.size)
+        } else {
+            logger.info("Snapshot saved: {} ({} bytes gzipped) → cache only (test resources dir not found)", key, compressed.size)
+        }
+    }
+
+    private fun findTestResourcesDir(): Path? {
+        // Walk up from CWD to find the project root (contains pom.xml), then resolve test resources
+        var dir = Path.of(System.getProperty("user.dir"))
+        while (dir.parent != null) {
+            val candidate = dir.resolve("src/test/resources/snapshots")
+            if (dir.resolve("pom.xml").exists()) {
+                candidate.createDirectories()
+                return candidate
+            }
+            dir = dir.parent
+        }
+        return null
     }
 
     private fun cacheKey(repo: String, since: Instant, until: Instant?): String {
