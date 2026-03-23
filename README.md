@@ -12,8 +12,6 @@
 
 Gauge the health of open (or closed!) source projects using nothing but pull request comment dynamics.
 
-> ⚠️ **Warning:** This tool can detect forks before they occur. Use responsibly.
-
 📖 **[Read the full analysis: Faction Detection — Reading the Review Graph Before the Fork](https://medium.com/p/75e100898160)** — retrodiction results across 15 repos including nodejs, redis, terraform, kubernetes, django, and more.
 
 Faction Detector analyses GitHub PR review activity to detect contributor faction dynamics and predict project splits. It builds a weighted directed graph of who reviews whom, runs community detection, and scores asymmetry across rolling time windows — then feeds everything into an LLM for narrative analysis.
