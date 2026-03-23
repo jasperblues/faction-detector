@@ -12,7 +12,7 @@
 
 Gauge the health of open (or closed!) source projects using nothing but pull request comment dynamics.
 
-📖 **[Read the full analysis: Faction Detection — Reading the Review Graph Before the Fork](https://medium.com/p/75e100898160)** — retrodiction results across 15 repos including nodejs, redis, terraform, kubernetes, django, and more.
+📖 **[Faction Detection — Reading the Review Graph Before the Fork](https://medium.com/p/75e100898160)** — how 1970s network science (Zachary's Karate Club) applies to GitHub PR review graphs. Covers the full pipeline from asymmetry scoring through community detection to LLM-powered classification, with retrodiction results across 15 repos.
 
 Faction Detector analyses GitHub PR review activity to detect contributor faction dynamics and predict project splits. It builds a weighted directed graph of who reviews whom, runs community detection, and scores asymmetry across rolling time windows — then feeds everything into an LLM for narrative analysis.
 
@@ -218,3 +218,7 @@ The E2E corpus includes 26 confirmed test cases across 15 repos — confirmed fr
 ## Contributors
 
 [![Faction Detector contributors](https://contrib.rocks/image?repo=jasperblues/faction-detector)](https://github.com/jasperblues/faction-detector/graphs/contributors)
+
+---
+
+> ⚠️ **Disclaimer:** This is a demonstration of what's possible with [Embabel](https://github.com/embabel/embabel-agent) and [Neo4j](https://neo4j.com). The corpus of 26 cases across 15 repos holds up well, but this is early work — treat results as signals to investigate, not verdicts. No open source projects were harmed in the making of this tool. Any resemblance to your codebase is entirely intentional.
