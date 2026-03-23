@@ -29,7 +29,8 @@ Built with [Embabel](https://github.com/embabel/embabel-agent) + Spring Boot + N
 | `FRACTURE_ADVERSARIAL_FORK` | Internal faction war: 9+ weeks of sustained high asymmetry AND adversarial comment signal above baseline. The strongest claim the tool makes. |
 | `FRACTURE_UPRISING` | Community unified against an external steward: 9+ weeks of high asymmetry, but low faction signal (contributors were aligned, not fighting each other) plus post-resolution re-escalation. |
 | `GOVERNANCE_CRISIS` | Real structural disruption visible in the review graph — organisational restructuring, corporate withdrawal, or brief crisis — but without fork-level evidence. |
-| `FRACTURE_IMMINENT` | Peak is current and unresolved — split may be imminent |
+| `FRACTURE_IMMINENT` | Unresolved factional tension with adversarial review signal — split may be imminent. Requires both high asymmetry AND adversarial evidence (avgFactionSignal or crossCommunityScore >= 0.05); without adversarial signal, downgrades to TENSION. |
+| `TENSION` | Elevated review asymmetry without adversarial dynamics. Common in single-gatekeeper or BDFL projects where structural asymmetry is high but reviews are constructive. Worth monitoring but not an imminent fork risk. |
 | `EXODUS` | Gradual sustained elevation that resolved — coordinated departure without adversarial spike |
 | `ATTRITION` | Natural contributor lifecycle turnover — succession problem, not faction problem |
 | `STABLE` | No significant asymmetry detected |
@@ -66,7 +67,7 @@ The io.js fork was announced December 9, 2014. The review graph peaked **Novembe
 - **GitHub PR reviews only**: The tool only sees review activity on GitHub pull requests. Projects that use email, Gerrit, Phabricator, or bot-mediated approvals will appear to have little or no data.
 - **Review asymmetry ≠ conflict**: High asymmetry can reflect structural specialisation (separate frontend/backend teams) as well as adversarial dynamics. The LLM narrative attempts to distinguish these, but treat results as signals to investigate, not verdicts.
 - **Comment scoring model**: Stage-2 comment scoring uses `claude-haiku-4-5` by default for speed and cost. Haiku tends to classify ambiguous comments as `FAIR` rather than `NITPICKY`, which slightly suppresses faction signals on marginal cases. To use a more nuanced model, change `AnthropicModels.CLAUDE_HAIKU_4_5` to `AnthropicModels.CLAUDE_SONNET_4_5` in `ReviewCommentScorer.kt` and bump `COMMENT_SCORE_CACHE_VERSION` to invalidate cached scores. Note that if you tune `DetectorWeights` to compensate for Haiku's FAIR bias, those weights will not transfer correctly to Sonnet.
-- **Bot accounts**: Accounts matching common bot patterns (`[bot]`, `-bot`) are filtered automatically. Project-specific automation accounts (e.g. `elasticmachine`) are not. If the narrative mentions a bot or automation account as a significant reviewer or bridge figure, re-run with the `--bots` flag to exclude it:
+- **Bot accounts**: Accounts matching common bot patterns (`[bot]`, `-bot`) and a built-in list of known service accounts (codecov-io, coveralls, CLAassistant, etc.) are filtered automatically. Project-specific automation accounts (e.g. `elasticmachine`) are not. If the narrative mentions a bot or automation account as a significant reviewer or bridge figure, re-run with the `--bots` flag to exclude it:
   ```
   analyse --repo elastic/elasticsearch --since 2020-01-01 --bots elasticmachine,merge-bot
   ```
@@ -206,15 +207,13 @@ This is useful for batch runs or scripting hypotheses overnight:
 ## Testing
 
 ```bash
-mvn test
+mvn test                                    # unit tests (no external dependencies)
+mvn test -DexcludedGroups='' -Dgroups=e2e   # E2E corpus tests (requires Neo4j + GitHub token)
 ```
 
----
+The E2E corpus includes 26 confirmed test cases across 15 repos — confirmed fractures (nodejs io.js, redis Valkey, terraform BSL, moby Docker Enterprise, RedisGraph/FalkorDB, gogs/gitea, presto/trino), true negatives (kubernetes, django, rails, fastapi, next.js), and pre-fork/quiet-period validations.
 
-## Next Steps
-
-- **GitHub Reviews API**: Currently the tool only captures review *comments*. Projects that use silent approvals (click Approve without leaving a comment) are invisible. Fetching formal review events via `/pulls/{number}/reviews` would unlock this class of project.
-- **Multi-repo support**: Accept a list of repos and produce a comparative report.
+**Snapshot cache**: E2E tests save gzipped intermediate data (`WindowedScores`) to `src/test/resources/snapshots/`. In CI (`CI=true`), tests load snapshots from classpath — no GitHub, Neo4j, or LLM calls needed. Locally, snapshots are always rebuilt from the full pipeline.
 
 ---
 
