@@ -163,17 +163,23 @@ class FractureDetectorTest {
     @Test
     fun `governance-frustration fork with re-escalation gives FRACTURE_UPRISING despite low faction signal`() {
         // io.js pattern: contributors aligned against external steward (Joyent), not each other.
-        // factionSignal is low (0.20) because there were no adversarial reviewer→author pairs —
-        // everyone agreed. But brief resolution (fork crystallises) followed by re-escalation
-        // (both sides restructuring) structurally confirms FRACTURE_UPRISING.
-        // Corporate departures (terraform BSL) resolve and go quiet — no re-escalation.
+        // Per-window faction signal is LOW during the crisis (contributors cooperating) and
+        // slightly higher at baseline — negative relative signal confirms uprising.
+        // Brief resolution (fork crystallises) followed by re-escalation (both sides restructuring).
         val scores = listOf(
-            score(0.2, 24), score(0.25, 22),                             // baseline
-            score(1.0, 18), score(0.82, 17), score(0.80, 16),
-            score(1.0, 15), score(0.80, 14), score(0.83, 13),
-            score(0.71, 12), score(0.65, 11), score(0.65, 10),              // 9-window cluster (0.47 below threshold)
-            score(0.33, 7, edgeCount = 10),                              // brief resolution (fork crystallises) — real activity, not a lull
-            score(0.67, 5),                                              // re-escalation (both sides restructuring)
+            score(0.2, 24).copy(windowFactionSignal = 0.10),             // baseline: normal friction
+            score(0.25, 22).copy(windowFactionSignal = 0.12),
+            score(1.0, 18).copy(windowFactionSignal = 0.03),             // crisis: cooperating against steward
+            score(0.82, 17).copy(windowFactionSignal = 0.02),
+            score(0.80, 16).copy(windowFactionSignal = 0.04),
+            score(1.0, 15).copy(windowFactionSignal = 0.03),
+            score(0.80, 14).copy(windowFactionSignal = 0.02),
+            score(0.83, 13).copy(windowFactionSignal = 0.03),
+            score(0.71, 12).copy(windowFactionSignal = 0.04),
+            score(0.65, 11).copy(windowFactionSignal = 0.05),
+            score(0.65, 10).copy(windowFactionSignal = 0.04),            // 9-window cluster
+            score(0.33, 7, edgeCount = 10).copy(windowFactionSignal = 0.06), // brief resolution
+            score(0.67, 5).copy(windowFactionSignal = 0.08),             // re-escalation
         )
         val result = detector.detect(scores, factionSignal = 0.20)
         assertEquals(TensionPattern.FRACTURE_UPRISING, result.pattern)

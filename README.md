@@ -2,7 +2,7 @@
 
 # Faction Detector
 
-![Build](https://github.com/embabel/faction-detector/actions/workflows/maven.yml/badge.svg)
+![Build](https://github.com/jasperblues/faction-detector/actions/workflows/maven.yml/badge.svg)
 
 ![Kotlin](https://img.shields.io/badge/kotlin-%237F52FF.svg?style=for-the-badge&logo=kotlin&logoColor=white) ![Spring](https://img.shields.io/badge/spring-%236DB33F.svg?style=for-the-badge&logo=spring&logoColor=white) ![Neo4j](https://img.shields.io/badge/Neo4j-008CC1?style=for-the-badge&logo=neo4j&logoColor=white) ![Apache Maven](https://img.shields.io/badge/Apache%20Maven-C71A36?style=for-the-badge&logo=Apache%20Maven&logoColor=white)
 
@@ -219,4 +219,4 @@ The E2E corpus includes 26 confirmed test cases across 15 repos — confirmed fr
 
 ## Contributors
 
-[![Faction Detector contributors](https://contrib.rocks/image?repo=embabel/faction-detector)](https://github.com/embabel/faction-detector/graphs/contributors)
+[![Faction Detector contributors](https://contrib.rocks/image?repo=jasperblues/faction-detector)](https://github.com/jasperblues/faction-detector/graphs/contributors)
