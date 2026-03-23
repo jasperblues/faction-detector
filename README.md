@@ -1,12 +1,12 @@
-<p align="center">
-  <img src="logo.png" width="180">
-</p>
+<img align="left" src="logo.png" width="180">
 
-# Faction Detector
+## Faction Detector
 
 ![Build](https://github.com/jasperblues/faction-detector/actions/workflows/maven.yml/badge.svg)
 
 [![Embabel](https://img.shields.io/badge/Embabel-Agent_Framework-6C3483?style=for-the-badge)](https://github.com/embabel/embabel-agent) ![Kotlin](https://img.shields.io/badge/kotlin-%237F52FF.svg?style=for-the-badge&logo=kotlin&logoColor=white) ![Spring](https://img.shields.io/badge/spring-%236DB33F.svg?style=for-the-badge&logo=spring&logoColor=white) ![Neo4j](https://img.shields.io/badge/Neo4j-008CC1?style=for-the-badge&logo=neo4j&logoColor=white)
+
+<br clear="left"/>
 
 > *Open source projects fork. Enterprise codebases rot. The review graph tells you which one is coming — and when.*
 
