@@ -68,7 +68,26 @@ data class GitHubReviewComment(
 )
 
 /** Increment when the edge schema or filtering logic changes — invalidates all prior edge caches. */
-internal const val EDGE_CACHE_VERSION = 2
+internal const val EDGE_CACHE_VERSION = 3
+
+/**
+ * Service accounts and CI bots that don't use `[bot]` or `-bot` suffixes.
+ * These produce high-centrality noise in the review graph without representing
+ * human contributor dynamics. Merged with the suffix-based heuristic in
+ * [GitHubClient.isHumanContributor].
+ */
+val KNOWN_SERVICE_ACCOUNTS: Set<String> = setOf(
+    // CI / coverage / quality
+    "codecov-io", "codecov-commenter", "coveralls", "sonarcloud",
+    // dependency management
+    "renovate", "greenkeeper", "snyk-bot",
+    // CLA / licensing
+    "CLAassistant", "cla-checker",
+    // stale / lock
+    "stale", "lock",
+    // platform-specific
+    "netlify", "vercel",
+)
 
 /**
  * Removes any edges whose timestamp falls outside [since, until).
@@ -142,6 +161,7 @@ class GitHubClient(private val properties: GitHubProperties) {
         && !this.endsWith("[bot]")
         && !this.endsWith("-bot")
         && !this.contains("-bot-")
+        && this !in KNOWN_SERVICE_ACCOUNTS
         && this !in excludeBots
 
     /**

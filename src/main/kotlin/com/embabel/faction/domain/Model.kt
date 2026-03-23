@@ -84,7 +84,7 @@ enum class TensionPattern {
     ATTRITION,
     /** Moderate unresolved tension (peak 0.5–0.7) — early warning signal, not yet critical.
      *  Worth monitoring; governance intervention may prevent escalation. */
-    FRACTURE_LIKELY,
+    TENSION,
     /** Severe unresolved tension (peak > 0.7) — structural fracture appears imminent. */
     FRACTURE_IMMINENT,
     /** Sharp asymmetry spike that resolved, but without confirmed adversarial comment signal or
@@ -197,7 +197,7 @@ data class DetectorWeights(
     val sharpRiseDelta: Double = 0.38,
     /** A single post-cluster window below this level confirms a brief resolution (multi-wave). */
     val briefResolutionThreshold: Double = 0.4,
-    /** Peak below this level → FRACTURE_LIKELY rather than FRACTURE_IMMINENT. */
+    /** Peak below this level → TENSION rather than FRACTURE_IMMINENT. */
     val imminentThreshold: Double = 0.70,
     /** ATTRITION: core impact below this fraction is consistent with natural turnover. */
     val attritionCoreThreshold: Double = 0.12,
@@ -248,8 +248,14 @@ data class DetectorWeights(
     val borderlineMargin: Double = 0.10,
     /** Lookback window (months) for contemporaneous centrality denominator in exodus detection.
      *  Contributors active within this many months before the departure count toward the
-     *  denominator; older contributors are excluded. Default 24. */
+     *  denominator; older contributors are excluded. Default 12. */
     val activeCentralityMonths: Long = 12,
+    /** Minimum faction signal required for FRACTURE_IMMINENT classification.
+     *  Either avgFactionSignal or crossCommunityScore must exceed this threshold,
+     *  otherwise IMMINENT downgrades to TENSION. This gates out projects
+     *  with high structural asymmetry but no adversarial dynamics (single-gatekeeper
+     *  repos, benevolent dictator models). Default 0.05. */
+    val minImminentFactionSignal: Double = 0.05,
 )
 
 /**

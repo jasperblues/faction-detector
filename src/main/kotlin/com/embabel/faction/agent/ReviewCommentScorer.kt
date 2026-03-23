@@ -53,7 +53,7 @@ private const val COMMENT_SCORE_CACHE_VERSION = 5
  * The per-comment cache (COMMENT_SCORE_CACHE_VERSION) is a finer-grained invalidation;
  * this version gates the higher-level aggregate.
  */
-private const val SCORED_PAIRS_CACHE_VERSION = 4
+internal const val SCORED_PAIRS_VERSION = 4
 
 /** Pair count threshold below which ensemble scoring is used to reduce LLM variance. */
 private const val SMALL_PAIR_THRESHOLD = 8
@@ -77,7 +77,7 @@ private val commentCacheMapper: ObjectMapper = jacksonObjectMapper()
  * - Per-comment scores: `~/.faction-cache/{owner}_{repo}_comment_{id}_v{VERSION}.json`
  *   Increment [COMMENT_SCORE_CACHE_VERSION] when the prompt or schema changes.
  * - Scored-pairs aggregate: `~/.faction-cache/{owner}_{repo}_{since}_{until}_scored-pairs_v{VERSION}.json`
- *   Increment [SCORED_PAIRS_CACHE_VERSION] when the factionSignal formula changes.
+ *   Increment [SCORED_PAIRS_VERSION] when the factionSignal formula changes.
  *   This cache provides determinism on re-runs and skips all LLM calls entirely.
  *
  * ## Ensemble scoring
@@ -331,7 +331,7 @@ class ReviewCommentScorer(
     private fun pairsCacheFile(owner: String, repo: String, since: Instant, until: Instant?): Path {
         val sinceEpoch = since.epochSecond
         val untilEpoch = until?.epochSecond ?: Instant.now().truncatedTo(ChronoUnit.DAYS).epochSecond
-        return cacheDir.resolve("${owner}_${repo}_${sinceEpoch}_${untilEpoch}_scored-pairs_v${SCORED_PAIRS_CACHE_VERSION}.json")
+        return cacheDir.resolve("${owner}_${repo}_${sinceEpoch}_${untilEpoch}_scored-pairs_v${SCORED_PAIRS_VERSION}.json")
     }
 }
 

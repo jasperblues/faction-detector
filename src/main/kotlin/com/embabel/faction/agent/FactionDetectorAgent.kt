@@ -21,6 +21,7 @@ import com.embabel.agent.api.annotation.Agent
 import com.embabel.agent.api.common.OperationContext
 import com.embabel.agent.domain.io.UserInput
 import com.embabel.agent.domain.library.HasContent
+import com.embabel.faction.domain.DetectorWeights
 import com.embabel.faction.domain.ExodusDetection
 import com.embabel.faction.domain.FractureDetection
 import com.embabel.faction.domain.PairAnomaly
@@ -174,6 +175,8 @@ class FactionDetectorAgent(
     private val reviewCommentScorer: ReviewCommentScorer,
     private val fractureDetector: FractureDetector,
     private val exodusDetector: ExodusDetector,
+    private val snapshotCache: SnapshotCache,
+    private val weights: DetectorWeights = DetectorWeights(),
 ) {
     companion object {
         /** Minimum review edges for a meaningful analysis. Below this the graph is too sparse
@@ -207,6 +210,19 @@ class FactionDetectorAgent(
 
     @Action
     fun fetchAndPersist(request: AnalysisRequest): FetchResult {
+        // If a snapshot exists, skip the expensive GitHub fetch and Neo4j persist.
+        // Return a minimal FetchResult — scoreFlaggedPairs will return the snapshot directly.
+        val repo = "${request.owner}/${request.repo}"
+        if (snapshotCache.load(repo, request.since, request.until) != null) {
+            logger.info("Snapshot exists for {} — skipping GitHub fetch and Neo4j persist", repo)
+            return FetchResult(
+                owner = request.owner, repo = repo, since = request.since, until = request.until,
+                windowedScores = emptyList(), flaggedPairs = emptyList(), recentPrNumbers = emptyList(),
+                edges = emptyList(), runId = request.runId, excludeBots = request.excludeBots,
+                skipNarrative = request.skipNarrative,
+            )
+        }
+
         val edges = gitHubClient.fetchReviewEdges(request.owner, request.repo, request.since, request.until, request.excludeBots)
         graphBuilder.persist(edges, request.runId)
         val windowedScores = asymmetryScorer.score(edges, request.since, until = request.until)
@@ -229,6 +245,13 @@ class FactionDetectorAgent(
 
     @Action
     fun scoreFlaggedPairs(fetch: FetchResult, context: OperationContext): WindowedScores {
+        // Snapshot cache: if we have a complete snapshot for this repo+window, skip
+        // LLM scoring and Neo4j community detection entirely.
+        snapshotCache.load(fetch.repo, fetch.since, fetch.until)?.let { snapshot ->
+            logger.info("Using snapshot for {} — skipping LLM scoring and Neo4j", fetch.repo)
+            return snapshot
+        }
+
         val scoredPairs = if (fetch.flaggedPairs.isNotEmpty()) {
             reviewCommentScorer.scorePairs(
                 owner = fetch.owner,
@@ -257,7 +280,7 @@ class FactionDetectorAgent(
             window.copy(windowFactionSignal = if (signals.isEmpty()) null else signals.average())
         }
 
-        return WindowedScores(
+        val result = WindowedScores(
             repo = fetch.repo,
             since = fetch.since,
             until = fetch.until,
@@ -269,6 +292,8 @@ class FactionDetectorAgent(
             excludeBots = fetch.excludeBots,
             skipNarrative = fetch.skipNarrative,
         )
+        snapshotCache.save(result)
+        return result
     }
 
     @AchievesGoal(description = "Faction analysis with split prediction narrative complete")
@@ -394,7 +419,27 @@ class FactionDetectorAgent(
             } else null
         } else null
 
+        // Signal gate: IMMINENT requires adversarial evidence, not just high structural asymmetry.
+        // Single-gatekeeper repos (fastapi, gogs-era projects) and benevolent-dictator models
+        // produce peak asymmetry of 1.00 without any factional dynamics. Downgrade to LIKELY
+        // unless the LLM-scored faction signal or cross-community adversarial score confirms
+        // genuine inter-faction tension.
+        if (fracture.pattern == TensionPattern.FRACTURE_IMMINENT
+            && avgFactionSignal < weights.minImminentFactionSignal
+            && crossCommunityScore < weights.minImminentFactionSignal
+        ) {
+            logger.info("Downgrading {} IMMINENT → LIKELY: avgFactionSignal={} crossCommunityScore={} both below threshold {}",
+                windowed.repo, "%.3f".format(avgFactionSignal), "%.3f".format(crossCommunityScore), weights.minImminentFactionSignal)
+            fracture = fracture.copy(pattern = TensionPattern.TENSION)
+        }
+
         val confidence = computeConfidence(fracture, crossCommunityScore, avgFactionSignal, exodus, factionFormationScore, peakModularity, asymmetryDelta)
+
+        logger.info("Diagnostics for {}: pattern={} factionFormation={} factionBalance={} factionCoverage={} peakModularity={} avgFactionSignal={} crossCommunityScore={} top1Power={} top2Power={} totalPower={} confidence={}",
+            windowed.repo, fracture.pattern, "%.3f".format(factionFormationScore), "%.3f".format(factionBalance),
+            "%.3f".format(factionCoverage), "%.3f".format(peakModularity), "%.3f".format(avgFactionSignal),
+            "%.3f".format(crossCommunityScore), "%.0f".format(top1Power), "%.0f".format(top2Power),
+            "%.0f".format(totalPower), "%.3f".format(confidence))
 
         val pairSummary = windowed.scoredPairs
             .sortedByDescending { it.factionSignal }
@@ -517,7 +562,7 @@ class FactionDetectorAgent(
             Write a concise 2-3 paragraph analysis:
             1. ${when (fracture.pattern) {
                 TensionPattern.ATTRITION -> "Who left and why — frame as natural contributor lifecycle, not faction conflict. Reference specific contributors and their likely motivations."
-                TensionPattern.FRACTURE_LIKELY -> "What early warning signals are present — which contributor groupings are showing divergence and why. Frame this as a preventable escalation, not a foregone conclusion."
+                TensionPattern.TENSION -> "What early warning signals are present — which contributor groupings are showing divergence and why. Frame this as a preventable escalation, not a foregone conclusion."
                 TensionPattern.FRACTURE_ADVERSARIAL_FORK -> "What internal factions formed and why — which contributor groups were in conflict, what drove the adversarial review dynamics, and who were the key figures on each side."
                 TensionPattern.FRACTURE_UPRISING -> "What drove the community to unify against the project steward — which governance or stewardship failures provoked the uprising, which contributors led it, and what outcome the unified community sought."
                 else -> "What factions formed and why — or what is currently building — referencing specific contributors and community groupings"
@@ -525,7 +570,7 @@ class FactionDetectorAgent(
             2. Risk level consistent with the fracture pattern AND the confidence score above
             3. ${when {
                 fracture.pattern == TensionPattern.ATTRITION -> "Concrete succession planning and knowledge transfer recommendations. Do NOT suggest governance intervention or frame this as a political conflict."
-                fracture.pattern == TensionPattern.FRACTURE_LIKELY -> "Concrete early interventions for maintainers — what governance or process changes could prevent this from escalating to a full fracture."
+                fracture.pattern == TensionPattern.TENSION -> "Concrete early interventions for maintainers — what governance or process changes could prevent this from escalating to a full fracture."
                 fracture.pattern == TensionPattern.FRACTURE_UPRISING -> "What the uprising achieved (or failed to achieve) and what it reveals about the stewardship model — was the community's grievance legitimate? Did the fork improve or fragment the ecosystem?"
                 fracture.isReEscalating -> "A fracture event occurred within this window followed by renewed tension — describe both the original event and what is driving the re-escalation."
                 fracture.isResolved -> "What this historical event tells us about the project's trajectory and what resolved it."
@@ -590,7 +635,7 @@ class FactionDetectorAgent(
                 else 1.0
                 ((base + 0.10) * structuralFactor).coerceIn(0.0, 1.0)
             }
-            TensionPattern.FRACTURE_LIKELY -> {
+            TensionPattern.TENSION -> {
                 // Moderate unresolved tension — same shape as IMMINENT but lower weight.
                 // No corroboration bonus; rising is still meaningful.
                 val risingBonus = if (fracture.isRising) 0.05 else 0.0

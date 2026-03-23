@@ -170,7 +170,7 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
         val rawPattern = when {
             // Unresolved: severity determines IMMINENT vs LIKELY
             !isResolved && peakWindow.asymmetryRatio >= weights.imminentThreshold -> TensionPattern.FRACTURE_IMMINENT
-            !isResolved -> TensionPattern.FRACTURE_LIKELY
+            !isResolved -> TensionPattern.TENSION
             // Resolved sharp rise: fracture type if signal confirms it,
             // otherwise GOVERNANCE_CRISIS (structural disruption without fork-level evidence).
             isResolved && isSharpRise && fractureType != null -> fractureType
@@ -318,7 +318,7 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
      * 1. ATTRITION ↔ EXODUS — driven by attritionCoreThreshold / attritionDropThreshold
      * 2. FRACTURE_OCCURRED ↔ GOVERNANCE_CRISIS — driven by sharpRiseDelta (when baseline exists)
      * 3. GOVERNANCE_CRISIS ↔ EXODUS — driven by sharpRiseDelta
-     * 4. FRACTURE_IMMINENT ↔ FRACTURE_LIKELY — driven by imminentThreshold
+     * 4. FRACTURE_IMMINENT ↔ TENSION — driven by imminentThreshold
      */
     private fun computeAlternativePattern(
         pattern: TensionPattern,
@@ -356,9 +356,9 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
                     TensionPattern.GOVERNANCE_CRISIS else null
 
             TensionPattern.FRACTURE_IMMINENT ->
-                if (isNear(peakAsymmetry, weights.imminentThreshold, m)) TensionPattern.FRACTURE_LIKELY else null
+                if (isNear(peakAsymmetry, weights.imminentThreshold, m)) TensionPattern.TENSION else null
 
-            TensionPattern.FRACTURE_LIKELY ->
+            TensionPattern.TENSION ->
                 if (isNear(peakAsymmetry, weights.imminentThreshold, m)) TensionPattern.FRACTURE_IMMINENT else null
 
             else -> null
