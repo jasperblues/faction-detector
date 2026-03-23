@@ -18,7 +18,7 @@ Gauge the health of open (or closed!) source projects using nothing but pull req
 
 Faction Detector analyses GitHub PR review activity to detect contributor faction dynamics and predict project splits. It builds a weighted directed graph of who reviews whom, runs community detection, and scores asymmetry across rolling time windows — then feeds everything into an LLM for narrative analysis.
 
-Built with [Embabel](https://github.com/embabel/embabel-agent) + Spring Boot + Neo4j + GDS.
+Built with [Embabel](https://github.com/embabel/embabel-agent) + [Neo4j](https://neo4j.com) + [Neo4j Graph Data Science](https://neo4j.com/docs/graph-data-science/current/) + [Spring Boot](https://spring.io/projects/spring-boot).
 
 ---
 
