@@ -193,7 +193,7 @@ New analyses automatically save snapshots, so subsequent runs of the same repo/w
 
 ## How it works
 
-> The [blog post](https://medium.com/p/75e100898160) covers the full pipeline with worked examples, Cypher queries, and the story of how 1970s karate club mathematics ended up predicting GitHub forks. You should read it. It's fun. But if you insist on the two-minute version:
+> The [blog post](https://medium.com/p/75e100898160) covers the full pipeline with worked examples, Cypher queries, and the story of how 1970s karate club mathematics ended up predicting GitHub forks. **You should read it. It's fun. But if you insist on the two-minute version**:
 
 1. **Detect structure** — Build a directed review graph (reviewer → author) from PR comments, roll 30-day asymmetry windows across it, and find the peak tension cluster. This is pure [Zachary's Karate Club](https://en.wikipedia.org/wiki/Zachary%27s_karate_club)-style network science — who talks to whom, and is it reciprocal? This single metric does ~80% of the detection work.
 
