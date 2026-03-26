@@ -29,7 +29,7 @@ class FactionShell(
     private val agentPlatform: AgentPlatform,
 ) {
 
-    @ShellMethod("Analyse contributor factions for a GitHub repo and predict splits")
+    @ShellMethod("Analyse contributor factions for a GitHub repo and predict splits", key = ["analyse", "analyze"])
     fun analyse(
         @ShellOption(help = "GitHub owner/repo, e.g. nodejs/node") repo: String,
         @ShellOption(defaultValue = "180", help = "Days of history to analyse (ignored if --since is set)") days: Int,
