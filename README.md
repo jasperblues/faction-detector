@@ -193,13 +193,17 @@ New analyses automatically save snapshots, so subsequent runs of the same repo/w
 
 ## How it works
 
-1. Fetch all PR review comments from the GitHub API for the repo + date range
-2. Build a directed weighted graph: reviewer → author edges
-3. Score each reviewer→author pair for asymmetry and anomaly vs baseline
-4. Run Neo4j GDS Louvain community detection on the weighted graph
-5. Roll a 30-day window across the period, computing asymmetry ratio per window
-6. Detect peak clusters, classify fracture pattern, detect contributor exodus step-changes
-7. Feed everything into an LLM for narrative analysis
+> The [blog post](https://medium.com/p/75e100898160) covers the full pipeline with worked examples, Cypher queries, and the story of how 1970s karate club mathematics ended up predicting GitHub forks. You should read it. It's fun. But if you insist on the two-minute version:
+
+1. **Detect structure** — Build a directed review graph (reviewer → author) from PR comments, roll 30-day asymmetry windows across it, and find the peak tension cluster. This is pure [Zachary's Karate Club](https://en.wikipedia.org/wiki/Zachary%27s_karate_club)-style network science — who talks to whom, and is it reciprocal? This single metric does ~80% of the detection work.
+
+2. **Find the factions** — Run [Louvain community detection](https://en.wikipedia.org/wiki/Louvain_method) via Neo4j GDS to identify which contributors cluster together and whether the clusters stopped talking to each other. Measure exodus: who left, and how load-bearing were they?
+
+3. **Check for adversarial or unifying dynamics** — Score the top anomalous review pairs with an LLM: are the comments nitpicky gatekeeping (adversarial fork) or substantive pushback (community uprising)? Compare crisis-period faction signal to the project's own baseline.
+
+4. **Classify** — Combine structure + factions + signal to produce a pattern: `FRACTURE_ADVERSARIAL_FORK`, `FRACTURE_UPRISING`, `GOVERNANCE_CRISIS`, `FRACTURE_IMMINENT`, `TENSION`, `EXODUS`, `ATTRITION`, or `STABLE`. A signal gate filters out false positives where asymmetry is high but reviews are constructive (single-gatekeeper repos, benevolent dictators).
+
+When the detector identifies a fork, it's not detecting someone clicking GitHub's "Fork" button. It's detecting a genuine schism where load-bearing contributors departed, took review capacity with them, and the resulting fork attracted enough talent to threaten the original. Redot forked Godot and got 5.8k stars from new volunteers — the detector sees tension but no core defections. Valkey forked Redis and took the maintainers — the detector saw that coming three months early.
 
 ---
 
