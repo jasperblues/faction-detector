@@ -259,6 +259,7 @@ class FractureDetector(private val weights: DetectorWeights = DetectorWeights())
             isRising = isRising,
             isReEscalating = isReEscalating,
             alternativePattern = alternativePattern,
+            hasBaseline = beforeCluster.isNotEmpty(),
         )
     }
 

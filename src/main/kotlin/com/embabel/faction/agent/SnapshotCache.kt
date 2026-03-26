@@ -39,7 +39,7 @@ import kotlin.io.path.writeBytes
  * or confidence computation changes. Snapshot cache keys include this so stale
  * snapshots are automatically bypassed.
  */
-const val DETECTOR_VERSION = 1
+const val DETECTOR_VERSION = 2
 
 /**
  * Composite version key: any change to edge construction, LLM scoring, or detector
@@ -70,10 +70,9 @@ class SnapshotCache {
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    /** When true, load() returns snapshots from classpath/cache. When false (local dev),
-     *  load() always returns null — forcing a full pipeline run and fresh snapshot save.
-     *  GitHub Actions sets CI=true by default. */
-    val ciMode: Boolean = System.getenv("CI") != null
+    /** When true, load() always returns null — forcing a full pipeline run and fresh
+     *  snapshot save. Set FACTION_FRESH=true or pass --fresh to bypass snapshots. */
+    val freshMode: Boolean = System.getenv("FACTION_FRESH")?.toBoolean() == true
 
     private val cacheDir: Path = Path.of(System.getProperty("user.home"), ".faction-cache", "snapshots")
         .also { it.createDirectories() }
@@ -83,25 +82,32 @@ class SnapshotCache {
         .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
 
     /**
-     * Attempts to load a snapshot. Checks classpath resources first (CI), then local cache.
-     * Returns null if no snapshot exists for this key.
+     * Attempts to load a snapshot. Checks classpath resources first (committed snapshots
+     * for CI and zero-setup local use), then the local cache (~/.faction-cache/snapshots/).
+     * Returns null if FACTION_FRESH=true or no snapshot exists for this key.
      */
     fun load(repo: String, since: Instant, until: Instant?): WindowedScores? {
         val key = cacheKey(repo, since, until)
 
-        if (!ciMode) {
-            // Local dev: always miss — force full pipeline run and fresh snapshot save.
-            logger.info("Snapshot skip (local mode): {}", key)
+        if (freshMode) {
+            logger.info("Snapshot skip (fresh mode): {}", key)
             return null
         }
 
-        // CI: check classpath (committed snapshots)
+        // Classpath: committed snapshots (works in CI and local `mvn` runs)
         val classpathResource = javaClass.getResourceAsStream("/snapshots/$key")
         if (classpathResource != null) {
             logger.info("Snapshot classpath hit: {}", key)
             return classpathResource.use { stream ->
                 mapper.readValue<WindowedScores>(GZIPInputStream(stream).readBytes())
             }
+        }
+
+        // Local cache: snapshots from previous full runs
+        val localFile = cacheDir.resolve(key)
+        if (localFile.exists()) {
+            logger.info("Snapshot local cache hit: {}", key)
+            return mapper.readValue<WindowedScores>(GZIPInputStream(ByteArrayInputStream(localFile.readBytes())).readBytes())
         }
 
         logger.info("Snapshot cache miss: {}", key)
@@ -120,23 +126,23 @@ class SnapshotCache {
         val localFile = cacheDir.resolve(key)
         localFile.writeBytes(compressed)
 
-        // Test resources — so `git add` picks them up for CI
-        val resourceDir = findTestResourcesDir()
+        // Main resources — so `git add` picks them up and they're on the classpath at runtime
+        val resourceDir = findResourcesDir()
         if (resourceDir != null) {
             val resourceFile = resourceDir.resolve(key)
             resourceFile.writeBytes(compressed)
-            logger.info("Snapshot saved: {} ({} bytes gzipped) → cache + test resources", key, compressed.size)
+            logger.info("Snapshot saved: {} ({} bytes gzipped) → cache + resources", key, compressed.size)
         } else {
-            logger.info("Snapshot saved: {} ({} bytes gzipped) → cache only (test resources dir not found)", key, compressed.size)
+            logger.info("Snapshot saved: {} ({} bytes gzipped) → cache only (resources dir not found)", key, compressed.size)
         }
     }
 
-    private fun findTestResourcesDir(): Path? {
-        // Walk up from CWD to find the project root (contains pom.xml), then resolve test resources
+    private fun findResourcesDir(): Path? {
+        // Walk up from CWD to find the project root (contains pom.xml), then resolve main resources
         var dir = Path.of(System.getProperty("user.dir"))
         while (dir.parent != null) {
-            val candidate = dir.resolve("src/test/resources/snapshots")
             if (dir.resolve("pom.xml").exists()) {
+                val candidate = dir.resolve("src/main/resources/snapshots")
                 candidate.createDirectories()
                 return candidate
             }

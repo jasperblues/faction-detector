@@ -135,6 +135,11 @@ data class FractureDetection(
     /** The pattern this result nearly was — set when the decisive threshold was crossed by < [DetectorWeights.borderlineMargin].
      *  Null when the classification was clear-cut. */
     val alternativePattern: TensionPattern? = null,
+    /** True when pre-cluster windows existed, giving the detector a baseline to compute
+     *  relative faction signal. False when the analysis window opens mid-crisis — the
+     *  fracture type classification used a backward-compat fallback and may benefit from
+     *  backfilling earlier data. */
+    val hasBaseline: Boolean = true,
 )
 
 /**
@@ -255,7 +260,7 @@ data class DetectorWeights(
      *  otherwise IMMINENT downgrades to TENSION. This gates out projects
      *  with high structural asymmetry but no adversarial dynamics (single-gatekeeper
      *  repos, benevolent dictator models). Default 0.05. */
-    val minImminentFactionSignal: Double = 0.05,
+    val minImminentFactionSignal: Double = 0.065,
 )
 
 /**

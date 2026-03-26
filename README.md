@@ -25,7 +25,7 @@ Built with [Embabel](https://github.com/embabel/embabel-agent) + [Neo4j](https:/
 | `FRACTURE_ADVERSARIAL_FORK` | Internal faction war: 9+ weeks of sustained high asymmetry AND adversarial comment signal above baseline. The strongest claim the tool makes. |
 | `FRACTURE_UPRISING` | Community unified against an external steward: 9+ weeks of high asymmetry, but low faction signal (contributors were aligned, not fighting each other) plus post-resolution re-escalation. |
 | `GOVERNANCE_CRISIS` | Real structural disruption visible in the review graph — organisational restructuring, corporate withdrawal, or brief crisis — but without fork-level evidence. |
-| `FRACTURE_IMMINENT` | Unresolved factional tension with adversarial review signal — split may be imminent. Requires both high asymmetry AND adversarial evidence (avgFactionSignal or crossCommunityScore >= 0.05); without adversarial signal, downgrades to TENSION. |
+| `FRACTURE_IMMINENT` | Unresolved factional tension with adversarial review signal — split may be imminent. Requires both high asymmetry AND adversarial evidence (avgFactionSignal or crossCommunityScore >= 0.065); without adversarial signal, downgrades to TENSION. |
 | `TENSION` | Elevated review asymmetry without adversarial dynamics. Common in single-gatekeeper or BDFL projects where structural asymmetry is high but reviews are constructive. Worth monitoring but not an imminent fork risk. |
 | `EXODUS` | Gradual sustained elevation that resolved — coordinated departure without adversarial spike |
 | `ATTRITION` | Natural contributor lifecycle turnover — succession problem, not faction problem |
@@ -125,36 +125,40 @@ CREATE DATABASE factions IF NOT EXISTS
 
 ## Running
 
-### 1. Set your API keys
+### Quick start (no API keys or Neo4j needed)
+
+The repo ships with pre-computed snapshots for every case in the corpus — the full pipeline output cached as gzipped JSON. When a snapshot matches your repo + date range, the entire upstream pipeline is skipped: no GitHub API calls, no Neo4j graph queries, no LLM scoring. The Neo4j driver is created at startup but connects lazily, so it never fails if no server is running.
+
+This means you can clone, build, and run immediately with nothing but a JVM:
+
+```bash
+./mvnw install -DskipTests
+./faction analyse --repo nodejs/node --since 2013-06-01 --until 2015-06-01   # snapshot hit — instant
+./faction analyse --repo redis/redis --since 2021-01-01 --until 2024-09-01   # snapshot hit — instant
+```
+
+Any repo/window combination that matches a committed snapshot skips the entire pipeline. See [Testing > Snapshot cache](#snapshot-cache) for the full list of cached cases.
+
+### Analysing new repos
+
+To analyse repos or date ranges not in the snapshot cache, you need the full pipeline:
+
+**1. Set your API keys**
 
 ```bash
 export FACTION_GITHUB_TOKEN=ghp_...    # GitHub personal access token
 export ANTHROPIC_API_KEY=sk-ant-...    # Anthropic API key
 ```
 
-Add both to your shell profile (`~/.zshrc` on Mac, `~/.bashrc` on Linux) so you don't have to set them each session:
+**2. Start Neo4j** — see [Neo4j with Docker](#neo4j-with-docker).
 
-```bash
-echo 'export FACTION_GITHUB_TOKEN=ghp_...'   >> ~/.zshrc
-echo 'export ANTHROPIC_API_KEY=sk-ant-...'   >> ~/.zshrc
-source ~/.zshrc
-```
-
-### 2. Start Neo4j
-
-See the [Neo4j with Docker](#neo4j-with-docker) section below, then come back here.
-
-### 3. Build
-
-The project includes a Maven wrapper — no need to install Maven separately:
+**3. Build** (if you haven't already)
 
 ```bash
 ./mvnw install -DskipTests
 ```
 
-This downloads dependencies and compiles the project. First run takes a few minutes.
-
-### 4a. Interactive shell
+**4a. Interactive shell**
 
 ```bash
 ./mvnw spring-boot:run
@@ -167,17 +171,14 @@ faction-detector:> analyse --repo nodejs/node --since 2013-06-01 --until 2015-06
 faction-detector:> analyse --repo redis/redis --days 365
 ```
 
-### 4b. One-shot CLI
-
-The `faction` script in the project root wraps the built jar:
+**4b. One-shot CLI**
 
 ```bash
 ./faction analyse --repo nodejs/node --since 2013-06-01 --until 2015-06-01
 ./faction analyse --repo redis/redis --days 365
 ```
-```
 
-This is useful for batch runs or scripting hypotheses overnight:
+Useful for batch runs or scripting hypotheses overnight:
 
 ```bash
 #!/bin/bash
@@ -185,6 +186,8 @@ This is useful for batch runs or scripting hypotheses overnight:
 ./faction analyse --repo babel/babel  --since 2020-06-01 --until 2022-06-01
 ./faction analyse --repo rust-lang/rust --since 2021-06-01 --until 2023-01-01
 ```
+
+New analyses automatically save snapshots, so subsequent runs of the same repo/window are instant.
 
 ---
 
@@ -204,12 +207,68 @@ This is useful for batch runs or scripting hypotheses overnight:
 
 ```bash
 mvn test                                    # unit tests (no external dependencies)
-mvn test -DexcludedGroups='' -Dgroups=e2e   # E2E corpus tests (requires Neo4j + GitHub token)
+mvn test -DexcludedGroups='' -Dgroups=e2e   # E2E corpus tests (uses snapshot cache)
 ```
 
-The E2E corpus includes 26 confirmed test cases across 15 repos — confirmed fractures (nodejs io.js, redis Valkey, terraform BSL, moby Docker Enterprise, RedisGraph/FalkorDB, gogs/gitea, presto/trino), true negatives (kubernetes, django, rails, fastapi, next.js), and pre-fork/quiet-period validations.
+### E2E corpus
 
-**Snapshot cache**: E2E tests save gzipped intermediate data (`WindowedScores`) to `src/test/resources/snapshots/`. In CI (`CI=true`), tests load snapshots from classpath — no GitHub, Neo4j, or LLM calls needed. Locally, snapshots are always rebuilt from the full pipeline.
+The corpus includes 36 test cases across 16 repos — confirmed fractures (nodejs io.js, redis Valkey, terraform BSL, moby Docker Enterprise, RedisGraph/FalkorDB, gogs/gitea, chef/Cinc, presto/trino), true negatives (kubernetes, django, rails, fastapi, next.js), pre-fork early warnings, and quiet-period validations.
+
+### Snapshot cache
+
+The repo ships with gzipped snapshots (`src/main/resources/snapshots/`) that capture the full intermediate pipeline state (edges, windowed scores, LLM-scored pairs, community assignments) for every corpus case. When a snapshot exists, the entire upstream pipeline is skipped — **no GitHub API calls, no Neo4j, no LLM scoring required.**
+
+This means you can **run the main app against any corpus repo/window** immediately after cloning — no API keys, no Neo4j, no waiting for GitHub crawls:
+
+```bash
+./mvnw install -DskipTests
+./faction analyse --repo nodejs/node --since 2013-06-01 --until 2015-06-01   # instant — snapshot hit
+./faction analyse --repo redis/redis --since 2021-01-01 --until 2024-09-01   # instant — snapshot hit
+```
+
+Only novel repo/window combinations that aren't in the snapshot cache will trigger the full pipeline (requiring Neo4j + API keys).
+
+E2E tests also load snapshots from the classpath, so they work in CI and on a fresh checkout with no external dependencies beyond a JVM.
+
+**Run from cache** (default — works anywhere):
+```bash
+mvn test -DexcludedGroups='' -Dgroups=e2e
+```
+
+**Force a full recompute** (requires Neo4j + GitHub token + Anthropic key):
+```bash
+FACTION_FRESH=true mvn test -DexcludedGroups='' -Dgroups=e2e
+```
+This bypasses all snapshots, runs the full pipeline from scratch, and saves fresh snapshots. Use this after changing detector logic, scoring models, or edge construction.
+
+### Contributing a new test case
+
+Found an interesting fork, governance crisis, or true negative? Here's how to add it:
+
+1. **Add an exploratory test** in `CorpusE2ETest.kt`:
+   ```kotlin
+   @Test
+   fun `myrepo interesting event 2022-2024 EXPLORATORY`() {
+       val result = analyse("owner/repo 2022-01-01 2024-01-01")
+       println(diagMsg(result))
+   }
+   ```
+
+2. **Run it locally** (requires Neo4j, GitHub token, and Anthropic API key):
+   ```bash
+   mvn test -DexcludedGroups='' -Dgroups=e2e \
+       -Dtest='CorpusE2ETest#myrepo interesting*'
+   ```
+   This fetches data from GitHub, runs the full pipeline, and saves a snapshot to `src/main/resources/snapshots/`.
+
+3. **Review the output** — check the pattern, confidence, departed contributors, and whether it matches what actually happened.
+
+4. **Lock it in** — replace `println(diagMsg(result))` with `assertPattern(TensionPattern.THE_PATTERN, result)` and update the test name.
+
+5. **Submit a PR** with:
+   - The new test in `CorpusE2ETest.kt`
+   - The generated snapshot file(s) in `src/main/resources/snapshots/`
+   - A comment in the test explaining the historical context and why the expected pattern is correct
 
 ---
 

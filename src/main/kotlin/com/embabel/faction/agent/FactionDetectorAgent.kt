@@ -338,27 +338,54 @@ class FactionDetectorAgent(
         var exodus = exodusDetector.detect(allEdges, windowed.until)
         var fracture = fractureDetector.detect(scores, exodus)
 
-        // Backfill: if we classified EXODUS with a confirmed departure but the window opens
-        // mid-tension (first 8 windows already elevated), fetch 6 months prior to find the
-        // true calm baseline. A single genuine calm period before the cluster changes the
-        // classification to FRACTURE_OCCURRED.
-        val earlyMean = scores.take(8).map { it.asymmetryRatio }.average().takeIf { !it.isNaN() } ?: 0.0
-        if (fracture.pattern == TensionPattern.EXODUS
-            && exodus != null
-            && earlyMean > 0.5
-        ) {
-            val owner = windowed.repo.substringBefore("/")
-            val repo = windowed.repo.substringAfter("/")
+        // Backfill: when the analysis window opens mid-tension (no pre-cluster baseline),
+        // fetch 6 months prior to find the true calm baseline. This changes:
+        // - EXODUS → FRACTURE_OCCURRED (a calm→spike→resolution arc becomes visible)
+        // - FRACTURE with no baseline → correct fracture type (adversarial vs uprising)
+        //   using the real relative faction signal instead of the backward-compat fallback.
+        val needsBackfill = !fracture.hasBaseline && (
+            fracture.pattern == TensionPattern.EXODUS ||
+            fracture.pattern == TensionPattern.FRACTURE_ADVERSARIAL_FORK ||
+            fracture.pattern == TensionPattern.FRACTURE_UPRISING ||
+            fracture.pattern == TensionPattern.GOVERNANCE_CRISIS
+        )
+        if (needsBackfill && exodus != null) {
             val backfillSince = windowed.since.minus(180, ChronoUnit.DAYS)
-            logger.info("Backfilling baseline: fetching {}/{} from {} to {}", owner, repo, backfillSince.toString().take(10), windowed.since.toString().take(10))
-            val backfillEdges = gitHubClient.fetchReviewEdges(owner, repo, backfillSince, windowed.since, windowed.excludeBots)
-            if (backfillEdges.isNotEmpty()) {
-                logger.info("Backfill complete: {} edges, re-running fracture detection", backfillEdges.size)
-                allEdges = backfillEdges + allEdges
+
+            // Try backfill snapshot first (CI path — no GitHub call needed)
+            val backfillSnapshot = snapshotCache.load(windowed.repo, backfillSince, windowed.until)
+            val backfillEdges: List<ReviewEdge>? = if (backfillSnapshot != null) {
+                logger.info("Backfill snapshot hit — using cached pre-window edges")
+                backfillSnapshot.edges.filter { it.timestamp.isBefore(windowed.since) }
+            } else {
+                val owner = windowed.repo.substringBefore("/")
+                val repo = windowed.repo.substringAfter("/")
+                logger.info("Backfilling baseline: fetching {}/{} from {} to {}", owner, repo, backfillSince.toString().take(10), windowed.since.toString().take(10))
+                gitHubClient.fetchReviewEdges(owner, repo, backfillSince, windowed.since, windowed.excludeBots)
+            }
+
+            if (backfillEdges != null && backfillEdges.isNotEmpty()) {
+                allEdges = backfillEdges + windowed.edges
                 scores = asymmetryScorer.score(allEdges, backfillSince, until = windowed.until)
                 exodus = exodusDetector.detect(allEdges, windowed.until)
                 fracture = fractureDetector.detect(scores, exodus)
                 backfilled = true
+
+                // Save backfill snapshot for CI (only when we fetched live)
+                if (backfillSnapshot == null) {
+                    snapshotCache.save(WindowedScores(
+                        repo = windowed.repo,
+                        since = backfillSince,
+                        until = windowed.until,
+                        scores = scores,
+                        scoredPairs = windowed.scoredPairs,
+                        communityAssignments = windowed.communityAssignments,
+                        edges = allEdges,
+                        runId = windowed.runId,
+                        excludeBots = windowed.excludeBots,
+                        skipNarrative = windowed.skipNarrative,
+                    ))
+                }
             }
         }
 
